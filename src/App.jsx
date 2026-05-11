@@ -41,7 +41,6 @@ const DEPARTMENTS = [
   "AI, машин сургалтын газар",
   "Дата инженерчлэлийн газар",
   "Санхүү, бүртгэлийн газар",
-  "Гүйцэтгэх удирдлага",
   "Санхүү төлөвлөлт, ноолуурын удирдлага & шинжилгээний газар",
   "Олон улсын санхүүжилт, эх үүсвэрийн газар",
   "Бага тойруу салбар",
@@ -308,6 +307,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [globalError, setGlobalError] = useState("");
   const [tab, setTab] = useState("quiz");
+  const [leaderboardSearch, setLeaderboardSearch] = useState("");
+  const [leaderboardPage, setLeaderboardPage] = useState(1);
   const [currentUser, setCurrentUser] = useState(function () {
     return getStoredCurrentUser();
   });
@@ -349,6 +350,26 @@ export default function App() {
     return buildLeaderboard(submissions);
   }, [submissions]);
 
+  const filteredLeaderboard = useMemo(function () {
+    const keyword = normalizeText(leaderboardSearch).toLowerCase();
+    if (!keyword) return leaderboard;
+
+    return leaderboard.filter(function (row) {
+      const haystack = [row.name, row.department, row.email]
+        .join(" ")
+        .toLowerCase();
+      return haystack.includes(keyword);
+    });
+  }, [leaderboard, leaderboardSearch]);
+
+  const leaderboardPageSize = 10;
+  const leaderboardTotalPages = Math.max(1, Math.ceil(filteredLeaderboard.length / leaderboardPageSize));
+  const safeLeaderboardPage = Math.min(leaderboardPage, leaderboardTotalPages);
+  const paginatedLeaderboard = filteredLeaderboard.slice(
+    (safeLeaderboardPage - 1) * leaderboardPageSize,
+    safeLeaderboardPage * leaderboardPageSize
+  );
+
   useEffect(function () {
     const timer = window.setTimeout(function () { setShowIntro(false); }, 2200);
     return function () { window.clearTimeout(timer); };
@@ -369,6 +390,10 @@ export default function App() {
   useEffect(function () {
     if (!adminQuizId && quizzes.length > 0) setAdminQuizId(quizzes[0].id);
   }, [adminQuizId, quizzes]);
+
+  useEffect(function () {
+    setLeaderboardPage(1);
+  }, [leaderboardSearch]);
 
   useEffect(function () {
     if (!quizStarted || !currentQuestion || !questionEndsAt || answerFeedback) return undefined;
@@ -809,12 +834,51 @@ export default function App() {
   function renderLeaderboard() {
     return (
       <main className="app-card" style={styles.card}>
-        <h2 style={styles.sectionTitle}>Онооны самбар</h2>
+        <div style={styles.leaderboardHeader}>
+          <h2 style={styles.sectionTitle}>Онооны самбар</h2>
+          <span style={styles.leaderboardCount}>Нийт: {filteredLeaderboard.length}</span>
+        </div>
+
+        <input
+          type="text"
+          placeholder="Нэр, газар, салбараар хайх"
+          value={leaderboardSearch}
+          onChange={function (event) { setLeaderboardSearch(event.target.value); }}
+          style={styles.leaderboardSearchInput}
+        />
+
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <thead><tr><th style={styles.th}>#</th><th style={styles.th}>Нэр</th><th style={styles.th}>Газар</th><th style={styles.th}>Нийт оноо</th><th style={styles.th}>Оролцсон</th></tr></thead>
-            <tbody>{leaderboard.map(function (row, index) { return <tr key={row.id}><td style={styles.td}>{index + 1}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>; })}</tbody>
+            <tbody>
+              {paginatedLeaderboard.length > 0 ? (
+                paginatedLeaderboard.map(function (row, index) {
+                  const rank = (safeLeaderboardPage - 1) * leaderboardPageSize + index + 1;
+                  return <tr key={row.id}><td style={styles.td}>{rank}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>;
+                })
+              ) : (
+                <tr><td style={styles.td} colSpan="5">Илэрц олдсонгүй.</td></tr>
+              )}
+            </tbody>
           </table>
+        </div>
+
+        <div style={styles.paginationBar}>
+          <button
+            onClick={function () { setLeaderboardPage(function (page) { return Math.max(1, page - 1); }); }}
+            style={safeLeaderboardPage <= 1 ? styles.disabledPaginationButton : styles.paginationButton}
+            disabled={safeLeaderboardPage <= 1}
+          >
+            Өмнөх
+          </button>
+          <span style={styles.paginationText}>{safeLeaderboardPage} / {leaderboardTotalPages}</span>
+          <button
+            onClick={function () { setLeaderboardPage(function (page) { return Math.min(leaderboardTotalPages, page + 1); }); }}
+            style={safeLeaderboardPage >= leaderboardTotalPages ? styles.disabledPaginationButton : styles.paginationButton}
+            disabled={safeLeaderboardPage >= leaderboardTotalPages}
+          >
+            Дараах
+          </button>
         </div>
       </main>
     );
@@ -1115,10 +1179,17 @@ const styles = {
   resultScore: { fontSize: 56, lineHeight: 1, fontWeight: 900, color: "#9BE564", textShadow: "0 0 20px rgba(122,201,67,0.46)", fontFamily: baseFont },
   resultText: { margin: "0 0 10px", color: "#d9ffc7", fontSize: 16, fontFamily: baseFont },
   resultButton: { padding: "12px 22px", borderRadius: 12, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 16, fontFamily: baseFont, boxShadow: "0 0 20px rgba(122,201,67,0.42)" },
-  tableWrap: { overflowX: "auto", WebkitOverflowScrolling: "touch", borderRadius: 12 },
+  leaderboardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10, fontFamily: baseFont },
+  leaderboardCount: { color: "#d9ffc7", fontSize: 13, fontWeight: 700, fontFamily: baseFont },
+  leaderboardSearchInput: { width: "100%", padding: "10px 12px", borderRadius: 10, background: "rgba(0,18,35,0.78)", color: "#f5fbff", marginBottom: 12, boxSizing: "border-box", outline: "none", fontSize: 14, fontFamily: baseFont },
+  tableWrap: { overflowX: "auto", overflowY: "auto", WebkitOverflowScrolling: "touch", borderRadius: 12, maxHeight: "70vh" },
   table: { width: "100%", borderCollapse: "collapse", fontFamily: baseFont },
   th: { textAlign: "left", padding: 12, background: "rgba(0,18,35,0.78)", fontSize: 14, color: "#9BE564", fontFamily: baseFont },
   td: { padding: 12, fontSize: 14, color: "#f5fbff", fontFamily: baseFont },
+  paginationBar: { display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 14, flexWrap: "wrap", fontFamily: baseFont },
+  paginationButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(0,48,94,0.34)", color: "#9BE564", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont, boxShadow: "0 0 10px rgba(122,201,67,0.16)" },
+  disabledPaginationButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(30,41,59,0.38)", color: "#94a3b8", cursor: "not-allowed", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
+  paginationText: { color: "#d9ffc7", fontSize: 14, fontWeight: 700, minWidth: 64, textAlign: "center", fontFamily: baseFont },
   adminBox: { borderRadius: 10, padding: 16, marginBottom: 16, background: "rgba(0,18,35,0.70)", fontFamily: baseFont },
   adminQuizRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 0", fontFamily: baseFont, flexWrap: "wrap" },
   adminActions: { display: "flex", gap: 8, flexWrap: "wrap" },
@@ -1146,6 +1217,7 @@ function runSelfTests() {
   console.assert(buildLeaderboard([{ userId: "u1", userName: "A", department: "D", score: 10 }, { userId: "u1", userName: "A", department: "D", score: 20 }])[0].totalScore === 30, "leaderboard should sum backend submissions by user");
   console.assert(CURRENT_USER_STORAGE_KEY.length > 0, "current user storage key should exist for refresh persistence");
   console.assert(normalizeText("  Test   User  ") === "Test User", "normalizeText should clean profile names before update");
+  console.assert(buildLeaderboard(Array.from({ length: 12 }).map(function (_, index) { return { userId: "u" + index, userName: "User " + index, department: "D", score: index }; })).length === 12, "leaderboard should support pagination-sized datasets");
 }
 
 runSelfTests();
