@@ -46,6 +46,13 @@ export function apiRegister(payload) {
   });
 }
 
+export function apiUpdateProfile(payload) {
+  return request("update-profile", {
+    method: "POST",
+    body: JSON.stringify(payload)
+  });
+}
+
 export function apiLogin(email) {
   return request("login", {
     method: "POST",

@@ -4,6 +4,7 @@ import {
   loadBootstrap,
   apiRegister,
   apiLogin,
+  apiUpdateProfile,
   apiSubmitAnswer,
   apiAdmin
 } from "./lib/api";
@@ -309,6 +310,9 @@ export default function App() {
   const [currentUser, setCurrentUser] = useState(function () {
     return getStoredCurrentUser();
   });
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [profileNameInput, setProfileNameInput] = useState("");
+  const [profileError, setProfileError] = useState("");
   const [authMode, setAuthMode] = useState("login");
   const [loginEmail, setLoginEmail] = useState("");
   const [registerName, setRegisterName] = useState("");
@@ -550,6 +554,42 @@ export default function App() {
     }
   }
 
+  async function updateCurrentUserName() {
+    if (!currentUser) return;
+
+    const name = normalizeText(profileNameInput);
+
+    if (!name) {
+      setProfileError("Нэрээ оруулна уу.");
+      return;
+    }
+
+    try {
+      setProfileError("");
+      const data = await apiUpdateProfile({ userId: currentUser.id, name });
+      const updatedUser = data.user || { ...currentUser, name };
+      setCurrentUser(updatedUser);
+      setProfileNameInput("");
+      setIsEditingName(false);
+      await refreshData();
+    } catch (error) {
+      setProfileError(error.message || "Нэр солих үед алдаа гарлаа.");
+    }
+  }
+
+  function startEditingName() {
+    if (!currentUser) return;
+    setProfileNameInput(currentUser.name || "");
+    setProfileError("");
+    setIsEditingName(true);
+  }
+
+  function cancelEditingName() {
+    setProfileNameInput("");
+    setProfileError("");
+    setIsEditingName(false);
+  }
+
   function logout() {
     setCurrentUser(null);
     resetQuizState();
@@ -677,8 +717,32 @@ export default function App() {
   function renderProfile() {
     return (
       <div style={styles.profilePanel}>
-        <div><span style={styles.profileLabel}>Овог нэр</span><strong style={styles.profileValue}>{currentUser.name}</strong></div>
+        <div>
+          <span style={styles.profileLabel}>Овог нэр</span>
+          {!isEditingName ? (
+            <div style={styles.profileNameRow}>
+              <strong style={styles.profileValue}>{currentUser.name}</strong>
+              <button onClick={startEditingName} style={styles.smallSecondaryButton}>Солих</button>
+            </div>
+          ) : (
+            <div style={styles.profileEditBox}>
+              <input
+                type="text"
+                placeholder="Шинэ нэр"
+                value={profileNameInput}
+                onChange={function (event) { setProfileNameInput(event.target.value); }}
+                onKeyDown={function (event) { if (event.key === "Enter") updateCurrentUserName(); }}
+                style={styles.input}
+              />
+              <div style={styles.profileEditActions}>
+                <button onClick={updateCurrentUserName} style={styles.primaryButton}>Хадгалах</button>
+                <button onClick={cancelEditingName} style={styles.secondaryButton}>Болих</button>
+              </div>
+            </div>
+          )}
+        </div>
         <div><span style={styles.profileLabel}>Газар</span><strong style={styles.profileValue}>{currentUser.department}</strong></div>
+        {profileError && <p style={styles.error}>{profileError}</p>}
         <button onClick={logout} style={styles.secondaryButton}>Гарах</button>
       </div>
     );
@@ -1009,6 +1073,7 @@ const styles = {
   textarea: { width: "100%", minHeight: 82, padding: 10, borderRadius: 9, background: "rgba(0,18,35,0.78)", color: "#f5fbff", marginBottom: 9, boxSizing: "border-box", outline: "none", fontSize: 13, fontFamily: baseFont },
   primaryButton: { padding: "8px 12px", borderRadius: 9, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont, boxShadow: "0 0 14px rgba(122,201,67,0.34)" },
   secondaryButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(0,48,94,0.34)", color: "#9BE564", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont, boxShadow: "0 0 10px rgba(122,201,67,0.16)" },
+  smallSecondaryButton: { padding: "6px 9px", borderRadius: 8, background: "rgba(0,48,94,0.34)", color: "#9BE564", cursor: "pointer", fontWeight: 700, fontSize: 12, fontFamily: baseFont, boxShadow: "0 0 10px rgba(122,201,67,0.12)" },
   dangerButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(80,10,10,0.34)", color: "#fecaca", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   disabledDangerButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(30,41,59,0.38)", color: "#94a3b8", cursor: "not-allowed", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   authSwitch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: 3, borderRadius: 10, background: "rgba(0,18,35,0.70)", marginBottom: 10 },
@@ -1020,6 +1085,9 @@ const styles = {
   profilePanel: { display: "grid", gap: 14, marginTop: 12, padding: 12, borderRadius: 10, background: "rgba(0,18,35,0.70)" },
   profileLabel: { display: "block", color: "#d9ffc7", fontSize: 12, marginBottom: 4, fontFamily: baseFont },
   profileValue: { display: "block", color: "#f5fbff", fontSize: 16, fontFamily: baseFont },
+  profileNameRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap", fontFamily: baseFont },
+  profileEditBox: { display: "grid", gap: 8, marginTop: 4, fontFamily: baseFont },
+  profileEditActions: { display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap", fontFamily: baseFont },
   startPanel: { minHeight: 340, display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center", gap: 16 },
   bigStartButton: { width: "fit-content", padding: "14px 26px", borderRadius: 12, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 800, fontSize: 18, fontFamily: baseFont, boxShadow: "0 0 20px rgba(122,201,67,0.46)" },
   smallEmpty: { borderRadius: 10, padding: "10px 14px", color: "#d9ffc7", background: "rgba(0,18,35,0.70)", textAlign: "center", display: "inline-flex", alignItems: "center", justifyContent: "center", minHeight: 42, boxSizing: "border-box", fontFamily: baseFont },
@@ -1076,6 +1144,7 @@ function runSelfTests() {
   console.assert(normalizeQuizFromApi({ id: "1", title: "T", is_open: true, questions: [{ id: "q", text: "A", options: ["A", "B"], answer_index: 1 }] }).questions[0].answer === 1, "API quiz normalization should map answer_index to answer");
   console.assert(buildLeaderboard([{ userId: "u1", userName: "A", department: "D", score: 10 }, { userId: "u1", userName: "A", department: "D", score: 20 }])[0].totalScore === 30, "leaderboard should sum backend submissions by user");
   console.assert(CURRENT_USER_STORAGE_KEY.length > 0, "current user storage key should exist for refresh persistence");
+  console.assert(normalizeText("  Test   User  ") === "Test User", "normalizeText should clean profile names before update");
 }
 
 runSelfTests();
