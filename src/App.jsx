@@ -132,7 +132,10 @@ function normalizeEmail(value) {
 
 function isValidWorkEmail(value) {
   const email = normalizeEmail(value);
-  return email.length > "@netcapital.mn".length && email.endsWith("@netcapital.mn") && !email.includes(" ");
+  return (
+    (email.length > "@netcapital.mn".length && email.endsWith("@netcapital.mn")) ||
+    (email.length > "@netgroup.mn".length && email.endsWith("@netgroup.mn"))
+  ) && !email.includes(" ");
 }
 
 function isValidDepartment(value) {
@@ -462,7 +465,7 @@ export default function App() {
       return;
     }
     if (!isValidWorkEmail(email)) {
-      setAuthError("Зөвхөн @netcapital.mn имэйл ашиглана уу.");
+      setAuthError("Зөвхөн @netcapital.mn эсвэл @netgroup.mn имэйл ашиглана уу.");
       return;
     }
     try {
@@ -647,7 +650,7 @@ export default function App() {
         {authMode === "login" && (
           <div>
             <label style={styles.label}>Цахим шуудан</label>
-            <input type="email" placeholder="name@netcapital.mn" value={loginEmail} onChange={function (event) { setLoginEmail(event.target.value); }} onKeyDown={function (event) { if (event.key === "Enter") loginUser(); }} style={styles.input} />
+            <input type="email" placeholder="name@netcapital.mn / name@netgroup.mn" value={loginEmail} onChange={function (event) { setLoginEmail(event.target.value); }} onKeyDown={function (event) { if (event.key === "Enter") loginUser(); }} style={styles.input} />
             <div style={styles.centerAction}><button onClick={loginUser} style={styles.primaryButton}>Нэвтрэх</button></div>
           </div>
         )}
@@ -661,7 +664,7 @@ export default function App() {
               {DEPARTMENTS.map(function (department) { return <option key={department} value={department} />; })}
             </datalist>
             <label style={styles.label}>Ажлын цахим шуудан</label>
-            <input type="email" placeholder="name@netcapital.mn" value={registerEmail} onChange={function (event) { setRegisterEmail(event.target.value); }} style={styles.input} />
+            <input type="email" placeholder="name@netcapital.mn / name@netgroup.mn" value={registerEmail} onChange={function (event) { setRegisterEmail(event.target.value); }} style={styles.input} />
             <div style={styles.centerAction}><button onClick={registerUser} style={styles.primaryButton}>Бүртгүүлэх</button></div>
           </div>
         )}
@@ -1060,7 +1063,8 @@ const styles = {
 
 function runSelfTests() {
   console.assert(DEPARTMENTS.length === 80, "department list should contain 80 entries including TUZ");
-  console.assert(isValidWorkEmail("test@netcapital.mn"), "work email should be valid");
+  console.assert(isValidWorkEmail("test@netcapital.mn"), "netcapital work email should be valid");
+  console.assert(isValidWorkEmail("test@netgroup.mn"), "netgroup work email should be valid");
   console.assert(!isValidWorkEmail("test@gmail.com"), "non-work email should be invalid");
   console.assert(isValidDepartment("ТУЗ"), "department list should include TUZ");
   console.assert(calculateQuestionPoints(true, 30) === 1000, "max score should be 1000");
