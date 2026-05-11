@@ -8,7 +8,7 @@ import {
   apiAdmin
 } from "./lib/api";
 
-const QUESTION_SECONDS = 20;
+const QUESTION_SECONDS = 30;
 const MAX_POINTS_PER_QUESTION = 1000;
 const SCORE_DECAY_POWER = 0.35;
 const ANSWER_FEEDBACK_DELAY_MS = 1200;
