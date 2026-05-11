@@ -680,7 +680,6 @@ export default function App() {
     return (
       <div className="start-panel" style={styles.startPanel}>
         <h2 className="quiz-title" style={styles.quizTitle}>{activeQuiz ? activeQuiz.title : "Quiz алга"}</h2>
-        {loading && <div style={styles.smallEmpty}>Ачааллаж байна...</div>}
         {!loading && !currentUser && <div style={styles.smallEmpty}>Нэвтэрнэ үү.</div>}
         {currentUser && !activeQuiz && <Empty text="Идэвхтэй асуулт алга." />}
         {currentUser && activeQuiz && activeQuiz.questions.length === 0 && <Empty text="Асуулт алга." />}
