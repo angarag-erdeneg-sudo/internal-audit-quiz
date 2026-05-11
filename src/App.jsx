@@ -13,6 +13,8 @@ const QUESTION_SECONDS = 20;
 const MAX_POINTS_PER_QUESTION = 1000;
 const SCORE_DECAY_POWER = 0.35;
 const ANSWER_FEEDBACK_DELAY_MS = 1200;
+const APP_UPDATE_CHECK_INTERVAL_MS = 60000;
+const LIVE_DATA_REFRESH_INTERVAL_MS = 10000;
 
 const DEPARTMENTS = [
   "Хүний нөөц, соёлын газар",
@@ -235,6 +237,45 @@ function buildLeaderboard(submissions) {
   });
 }
 
+function getAppAssetSignatureFromDocument(doc) {
+  if (!doc || !doc.querySelectorAll) return "";
+
+  const scripts = Array.from(doc.querySelectorAll("script[src]"))
+    .map(function (script) { return script.getAttribute("src") || ""; })
+    .filter(function (src) { return src.includes("/assets/") || src.includes("/src/"); })
+    .sort()
+    .join("|");
+
+  const stylesheets = Array.from(doc.querySelectorAll("link[rel='stylesheet'][href]"))
+    .map(function (link) { return link.getAttribute("href") || ""; })
+    .filter(function (href) { return href.includes("/assets/"); })
+    .sort()
+    .join("|");
+
+  return scripts + "::" + stylesheets;
+}
+
+async function hasNewAppVersion() {
+  if (typeof window === "undefined" || typeof document === "undefined") return false;
+  if (window.location.hostname === "localhost") return false;
+
+  const currentSignature = getAppAssetSignatureFromDocument(document);
+  if (!currentSignature) return false;
+
+  const response = await fetch(window.location.origin + window.location.pathname, {
+    cache: "no-store",
+    headers: {
+      "Cache-Control": "no-cache"
+    }
+  });
+
+  const html = await response.text();
+  const nextDocument = new DOMParser().parseFromString(html, "text/html");
+  const nextSignature = getAppAssetSignatureFromDocument(nextDocument);
+
+  return Boolean(nextSignature && currentSignature !== nextSignature);
+}
+
 function playFinishSound() {
   try {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
@@ -306,6 +347,7 @@ export default function App() {
   const [submissions, setSubmissions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [globalError, setGlobalError] = useState("");
+  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [tab, setTab] = useState("quiz");
   const [leaderboardSearch, setLeaderboardSearch] = useState("");
   const [leaderboardPage, setLeaderboardPage] = useState(1);
@@ -386,12 +428,74 @@ export default function App() {
   }, []);
 
   useEffect(function () {
+    let stopped = false;
+    let intervalId = 0;
+
+    async function checkForUpdate() {
+      try {
+        const hasUpdate = await hasNewAppVersion();
+        if (!hasUpdate || stopped) return;
+
+        if (!quizStarted) {
+          window.location.reload();
+          return;
+        }
+
+        setUpdateAvailable(true);
+      } catch {
+        // Update checks should never block the app.
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (!document.hidden) checkForUpdate();
+    }
+
+    window.addEventListener("focus", checkForUpdate);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    intervalId = window.setInterval(checkForUpdate, APP_UPDATE_CHECK_INTERVAL_MS);
+    checkForUpdate();
+
+    return function () {
+      stopped = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", checkForUpdate);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [quizStarted]);
+
+  useEffect(function () {
     saveStoredCurrentUser(currentUser);
   }, [currentUser]);
 
   useEffect(function () {
     resetQuizState(false);
   }, [activeQuiz ? activeQuiz.id : null, currentUser ? currentUser.id : null]);
+
+  useEffect(function () {
+    let stopped = false;
+    let intervalId = 0;
+
+    async function refreshLiveData() {
+      if (stopped) return;
+      if (quizStarted) return;
+
+      await refreshData({ silent: true });
+    }
+
+    function handleFocusRefresh() {
+      refreshLiveData();
+    }
+
+    window.addEventListener("focus", handleFocusRefresh);
+    intervalId = window.setInterval(refreshLiveData, LIVE_DATA_REFRESH_INTERVAL_MS);
+
+    return function () {
+      stopped = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocusRefresh);
+    };
+  }, [quizStarted]);
 
   useEffect(function () {
     if (!adminQuizId && quizzes.length > 0) setAdminQuizId(quizzes[0].id);
@@ -443,9 +547,11 @@ export default function App() {
     return function () { window.clearTimeout(timer); };
   }, [quizStarted, answerFeedback ? answerFeedback.questionId : null]);
 
-  async function refreshData() {
+  async function refreshData(options = {}) {
+    const silent = Boolean(options.silent);
+
     try {
-      setGlobalError("");
+      if (!silent) setGlobalError("");
       const data = await loadBootstrap();
       const normalizedQuizzes = (data.quizzes || []).map(normalizeQuizFromApi);
       const normalizedSubmissions = (data.leaderboard || data.submissions || []).map(normalizeSubmissionFromApi);
@@ -455,7 +561,7 @@ export default function App() {
     } catch (error) {
       setGlobalError(error.message || "Мэдээлэл татах үед алдаа гарлаа.");
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }
 
@@ -973,6 +1079,12 @@ export default function App() {
         </div>
       </header>
       {globalError && <div style={styles.globalError}>{globalError}</div>}
+      {updateAvailable && (
+        <div style={styles.updateBanner}>
+          <span>Сайтын шинэ хувилбар гарсан байна.</span>
+          <button onClick={function () { window.location.reload(); }} style={styles.updateButton}>Шинэчлэх</button>
+        </div>
+      )}
       <nav className="app-tabs" style={styles.tabs}>
         <button className="app-tab" onClick={function () { setTab("quiz"); }} style={getTabStyle(tab === "quiz")}>Асуулт</button>
         <button className="app-tab" onClick={function () { setTab("leaderboard"); }} style={getTabStyle(tab === "leaderboard")}>Онооны самбар</button>
@@ -1152,6 +1264,8 @@ const styles = {
   centerAction: { display: "flex", justifyContent: "center", marginTop: 8 },
   error: { color: "#fca5a5", fontSize: 14, marginTop: 8, textAlign: "center", fontFamily: baseFont },
   globalError: { marginBottom: 12, padding: 10, borderRadius: 10, background: "rgba(127,29,29,0.38)", color: "#fecaca", textAlign: "center", fontFamily: baseFont },
+  updateBanner: { marginBottom: 12, padding: 10, borderRadius: 10, background: "rgba(122,201,67,0.16)", color: "#d9ffc7", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", textAlign: "center", fontFamily: baseFont },
+  updateButton: { padding: "7px 11px", borderRadius: 9, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   profilePanel: { display: "grid", gap: 14, marginTop: 12, padding: 12, borderRadius: 10, background: "rgba(0,18,35,0.70)" },
   profileLabel: { display: "block", color: "#d9ffc7", fontSize: 12, marginBottom: 4, fontFamily: baseFont },
   profileValue: { display: "block", color: "#f5fbff", fontSize: 16, fontFamily: baseFont },
@@ -1223,6 +1337,8 @@ function runSelfTests() {
   console.assert(CURRENT_USER_STORAGE_KEY.length > 0, "current user storage key should exist for refresh persistence");
   console.assert(normalizeText("  Test   User  ") === "Test User", "normalizeText should clean profile names before update");
   console.assert(buildLeaderboard(Array.from({ length: 12 }).map(function (_, index) { return { userId: "u" + index, userName: "User " + index, department: "D", score: index }; })).length === 12, "leaderboard should support pagination-sized datasets");
+  console.assert(APP_UPDATE_CHECK_INTERVAL_MS >= 30000, "app update check interval should not be too aggressive");
+  console.assert(LIVE_DATA_REFRESH_INTERVAL_MS >= 5000, "live data refresh should not be too aggressive");
 }
 
 runSelfTests();
