@@ -156,6 +156,10 @@ function calculateQuestionPoints(isCorrect, secondsLeft) {
   return Math.round(Math.pow(ratio, SCORE_DECAY_POWER) * MAX_POINTS_PER_QUESTION);
 }
 
+function formatScore(value) {
+  return String(Math.round(Number(value || 0)));
+}
+
 function getPreciseSecondsLeft(questionEndsAt) {
   if (!questionEndsAt) return QUESTION_SECONDS;
   return clampNumber((questionEndsAt - Date.now()) / 1000, 0, QUESTION_SECONDS);
@@ -712,8 +716,8 @@ export default function App() {
         {answerFeedback && (
           <div style={answerFeedback.isCorrect ? styles.scoreOverlay : styles.scoreOverlayWrong}>
             <div style={styles.scoreOverlayLabel}>{answerFeedback.message}</div>
-            <div className="score-value" style={styles.scoreOverlayValue}>{animatedScore}</div>
-            <div style={styles.scoreOverlaySub}>+{answerFeedback.score}</div>
+            <div className="score-value" style={styles.scoreOverlayValue}>{formatScore(animatedScore)}</div>
+            <div style={styles.scoreOverlaySub}>+{formatScore(answerFeedback.score)}</div>
           </div>
         )}
       </div>
@@ -726,7 +730,7 @@ export default function App() {
         <div style={styles.confettiWrap}>{Array.from({ length: 32 }).map(function (_, index) { return <span key={index} style={getConfettiStyle(index)} />; })}</div>
         <div style={styles.resultBadge}>Баяр хүргэе! 🎉</div>
         <h2 style={styles.resultTitle}>{lastResult.quizTitle}</h2>
-        <div style={styles.resultScore}>{lastResult.score}</div>
+        <div style={styles.resultScore}>{formatScore(lastResult.score)}</div>
         <p style={styles.resultText}>Таны авсан нийт оноо</p>
         <button onClick={function () { setTab("leaderboard"); }} style={styles.resultButton}>Онооны самбар харах</button>
       </div>
@@ -740,7 +744,7 @@ export default function App() {
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <thead><tr><th style={styles.th}>#</th><th style={styles.th}>Нэр</th><th style={styles.th}>Газар</th><th style={styles.th}>Нийт оноо</th><th style={styles.th}>Оролцсон</th></tr></thead>
-            <tbody>{leaderboard.map(function (row, index) { return <tr key={row.id}><td style={styles.td}>{index + 1}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{row.totalScore}</strong></td><td style={styles.td}>{row.completed}</td></tr>; })}</tbody>
+            <tbody>{leaderboard.map(function (row, index) { return <tr key={row.id}><td style={styles.td}>{index + 1}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>; })}</tbody>
           </table>
         </div>
       </main>
@@ -1059,7 +1063,7 @@ function runSelfTests() {
   console.assert(isValidWorkEmail("test@netcapital.mn"), "work email should be valid");
   console.assert(!isValidWorkEmail("test@gmail.com"), "non-work email should be invalid");
   console.assert(isValidDepartment("ТУЗ"), "department list should include TUZ");
-  console.assert(calculateQuestionPoints(true, 20) === 1000, "max score should be 1000");
+  console.assert(calculateQuestionPoints(true, 30) === 1000, "max score should be 1000");
   console.assert(calculateQuestionPoints(false, 20) === 0, "wrong answer should be 0");
   console.assert(parseOptions("A\n\nB").length === 2, "parseOptions should ignore blanks");
   console.assert(getOptionButtonStyle(false).boxShadow === "none", "unselected option should not have shadow");
