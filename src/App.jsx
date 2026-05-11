@@ -97,6 +97,30 @@ const DEPARTMENTS = [
 ];
 
 const INITIAL_QUIZZES = [];
+const CURRENT_USER_STORAGE_KEY = "internal_audit_quiz_current_user";
+
+function getStoredCurrentUser() {
+  try {
+    if (typeof window === "undefined") return null;
+    const rawUser = window.localStorage.getItem(CURRENT_USER_STORAGE_KEY);
+    return rawUser ? JSON.parse(rawUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredCurrentUser(user) {
+  try {
+    if (typeof window === "undefined") return;
+    if (user) {
+      window.localStorage.setItem(CURRENT_USER_STORAGE_KEY, JSON.stringify(user));
+    } else {
+      window.localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
+    }
+  } catch {
+    // Local storage is optional.
+  }
+}
 
 function normalizeText(value) {
   return String(value || "").trim().split(" ").filter(Boolean).join(" ");
@@ -274,7 +298,9 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [globalError, setGlobalError] = useState("");
   const [tab, setTab] = useState("quiz");
-  const [currentUser, setCurrentUser] = useState(null);
+  const [currentUser, setCurrentUser] = useState(function () {
+    return getStoredCurrentUser();
+  });
   const [authMode, setAuthMode] = useState("login");
   const [loginEmail, setLoginEmail] = useState("");
   const [registerName, setRegisterName] = useState("");
@@ -318,6 +344,10 @@ export default function App() {
   useEffect(function () {
     refreshData();
   }, []);
+
+  useEffect(function () {
+    saveStoredCurrentUser(currentUser);
+  }, [currentUser]);
 
   useEffect(function () {
     resetQuizState(false);
@@ -1037,6 +1067,7 @@ function runSelfTests() {
   console.assert(Array.isArray(INITIAL_QUIZZES), "backend build should start with an empty quiz cache");
   console.assert(normalizeQuizFromApi({ id: "1", title: "T", is_open: true, questions: [{ id: "q", text: "A", options: ["A", "B"], answer_index: 1 }] }).questions[0].answer === 1, "API quiz normalization should map answer_index to answer");
   console.assert(buildLeaderboard([{ userId: "u1", userName: "A", department: "D", score: 10 }, { userId: "u1", userName: "A", department: "D", score: 20 }])[0].totalScore === 30, "leaderboard should sum backend submissions by user");
+  console.assert(CURRENT_USER_STORAGE_KEY.length > 0, "current user storage key should exist for refresh persistence");
 }
 
 runSelfTests();
