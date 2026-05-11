@@ -350,17 +350,23 @@ export default function App() {
     return buildLeaderboard(submissions);
   }, [submissions]);
 
+  const rankedLeaderboard = useMemo(function () {
+    return leaderboard.map(function (row, index) {
+      return { ...row, rank: index + 1 };
+    });
+  }, [leaderboard]);
+
   const filteredLeaderboard = useMemo(function () {
     const keyword = normalizeText(leaderboardSearch).toLowerCase();
-    if (!keyword) return leaderboard;
+    if (!keyword) return rankedLeaderboard;
 
-    return leaderboard.filter(function (row) {
+    return rankedLeaderboard.filter(function (row) {
       const haystack = [row.name, row.department, row.email]
         .join(" ")
         .toLowerCase();
       return haystack.includes(keyword);
     });
-  }, [leaderboard, leaderboardSearch]);
+  }, [rankedLeaderboard, leaderboardSearch]);
 
   const leaderboardPageSize = 10;
   const leaderboardTotalPages = Math.max(1, Math.ceil(filteredLeaderboard.length / leaderboardPageSize));
@@ -853,8 +859,7 @@ export default function App() {
             <tbody>
               {paginatedLeaderboard.length > 0 ? (
                 paginatedLeaderboard.map(function (row, index) {
-                  const rank = (safeLeaderboardPage - 1) * leaderboardPageSize + index + 1;
-                  return <tr key={row.id}><td style={styles.td}>{rank}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>;
+                  return <tr key={row.id}><td style={styles.td}>{row.rank}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>;
                 })
               ) : (
                 <tr><td style={styles.td} colSpan="5">Илэрц олдсонгүй.</td></tr>
@@ -1221,3 +1226,4 @@ function runSelfTests() {
 }
 
 runSelfTests();
+
