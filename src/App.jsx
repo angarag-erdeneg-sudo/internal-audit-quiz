@@ -132,10 +132,11 @@ function normalizeEmail(value) {
 
 function isValidWorkEmail(value) {
   const email = normalizeEmail(value);
-  return (
-    (email.length > "@netcapital.mn".length && email.endsWith("@netcapital.mn")) ||
-    (email.length > "@netgroup.mn".length && email.endsWith("@netgroup.mn"))
-  ) && !email.includes(" ");
+  const allowedDomains = ["@netcapital.mn", "@netgroup.mn"];
+
+  return allowedDomains.some(function (domain) {
+    return email.length > domain.length && email.endsWith(domain);
+  }) && !email.includes(" ");
 }
 
 function isValidDepartment(value) {

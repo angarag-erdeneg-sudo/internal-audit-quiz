@@ -18,9 +18,17 @@ export async function handler(event) {
 
     const normalizedEmail = String(email).trim().toLowerCase();
 
-    if (!normalizedEmail.endsWith("@netcapital.mn")) {
-      return json(400, { error: "Зөвхөн @netcapital.mn имэйл ашиглана уу." });
-    }
+    const allowedDomains = ["@netcapital.mn", "@netgroup.mn"];
+
+const isAllowedEmail = allowedDomains.some(function (domain) {
+  return normalizedEmail.length > domain.length && normalizedEmail.endsWith(domain);
+});
+
+if (!isAllowedEmail) {
+  return json(400, {
+    error: "Зөвхөн @netcapital.mn эсвэл @netgroup.mn имэйл ашиглана уу."
+  });
+}
 
     const supabase = getSupabaseAdmin();
 
