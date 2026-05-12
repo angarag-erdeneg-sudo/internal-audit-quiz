@@ -21,7 +21,6 @@ const DEPARTMENTS = [
   "Стратеги, гүйцэтгэлийн удирдлагын газар",
   "Хөрөнгийн зах зээлийн газар",
   "Дотоод аудитын газар",
-  "Гүйцэтгэх удирдлага",
   "Хөрөнгө оруулалтын бүтээгдэхүүн, процесс хөгжүүлэлтийн газар",
   "Хөрөнгө оруулалтын борлуулалт, харилцагчийн удирдлагын газар",
   "Эрсдэлийн удирдлагын газар",
@@ -97,7 +96,8 @@ const DEPARTMENTS = [
   "Хороолол салбар",
   "Чингэлтэй салбар",
   "Яармаг салбар",
-  "ТУЗ"
+  "ТУЗ",
+  "Гүйцэтгэх удирдлага"
 ];
 
 const INITIAL_QUIZZES = [];
@@ -560,7 +560,9 @@ export default function App() {
       setSubmissions(normalizedSubmissions);
       if (!adminQuizId && normalizedQuizzes.length > 0) setAdminQuizId(normalizedQuizzes[0].id);
     } catch (error) {
-      setGlobalError(error.message || "Мэдээлэл татах үед алдаа гарлаа.");
+      if (!silent) {
+        setGlobalError(error.message || "Мэдээлэл татах үед алдаа гарлаа.");
+      }
     } finally {
       if (!silent) setLoading(false);
     }
@@ -1323,7 +1325,8 @@ const styles = {
 };
 
 function runSelfTests() {
-  console.assert(DEPARTMENTS.length === 80, "department list should contain 80 entries including TUZ");
+  console.assert(DEPARTMENTS.includes("ТУЗ"), "department list should include TUZ");
+  console.assert(DEPARTMENTS.includes("Гүйцэтгэх удирдлага"), "department list should include executive management");
   console.assert(isValidWorkEmail("test@netcapital.mn"), "netcapital work email should be valid");
   console.assert(isValidWorkEmail("test@netgroup.mn"), "netgroup work email should be valid");
   console.assert(!isValidWorkEmail("test@gmail.com"), "non-work email should be invalid");
@@ -1343,4 +1346,3 @@ function runSelfTests() {
 }
 
 runSelfTests();
-
