@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import lionImage from "./assets/lion.png";
+import iiaLogo from "./assets/iia-logo.png";
+import netCapitalLogo from "./assets/netcapital-logo.jfif";
 import {
   loadBootstrap,
   apiRegister,
@@ -1076,6 +1078,14 @@ export default function App() {
       <style>{appCss}</style>
       {showIntro && <Intro image={lionImage} />}
       <header style={styles.header}>
+        <div style={styles.logoStrip}>
+          <div style={styles.netCapitalLogoWrap}>
+            <img src={netCapitalLogo} alt="Netcapital financial group" style={styles.netCapitalLogo} />
+          </div>
+          <div style={styles.iiaLogoWrap}>
+            <img src={iiaLogo} alt="The Institute of Internal Auditors" style={styles.iiaLogo} />
+          </div>
+        </div>
         <div style={styles.headerTitleBlock}>
           <h1 className="app-title" style={styles.title}>Дотоод аудитыг сурталчлах сар</h1>
           <p className="app-subtitle" style={styles.subtitle}>5-р дугаар сарын аян</p>
@@ -1105,6 +1115,7 @@ export default function App() {
       )}
       {tab === "leaderboard" && renderLeaderboard()}
       {tab === "admin" && renderAdmin()}
+      <footer style={styles.footerTagline}>Lead the movement. Share your voice.</footer>
     </div>
   );
 }
@@ -1205,6 +1216,45 @@ const appCss = `
   }
 
   @media (max-width: 760px) {
+    .app-page header {
+      align-items: flex-start !important;
+      gap: 0 !important;
+    }
+
+    .app-page header > div:first-child {
+      width: 100% !important;
+      justify-content: flex-start !important;
+      gap: 0 !important;
+      margin-left: 0 !important;
+      margin-right: 0 !important;
+    }
+
+    .app-page header > div:first-child > div:first-child {
+      width: auto !important;
+      height: 78px !important;
+      padding: 0 !important;
+    }
+
+    .app-page header > div:first-child > div:first-child {
+      width: auto !important;
+      height: 48px !important;
+      padding: 0 !important;
+      margin-right: 5px !important;
+    }
+
+    .app-page header > div:first-child > div:last-child {
+      width: auto !important;
+      height: 78px !important;
+      padding: 0 !important;
+      margin-left: 0 !important;
+    }
+
+    .app-page footer {
+      font-size: 18px !important;
+      margin-top: 14px !important;
+      padding: 12px 8px !important;
+    }
+
     .app-page { width: 100% !important; max-width: 100vw !important; padding: 14px !important; overflow-x: hidden !important; }
     .app-title { font-size: 24px !important; line-height: 1.12 !important; word-break: keep-all !important; }
     .app-subtitle { font-size: 13px !important; }
@@ -1239,8 +1289,13 @@ const baseFont = "Inter, Arial, sans-serif";
 
 const styles = {
   page: { minHeight: "100vh", width: "100%", maxWidth: "100vw", margin: 0, background: "radial-gradient(circle at top, #0a5a46 0%, #00305E 38%, #02070d 100%)", color: "#f5fbff", padding: 20, fontFamily: baseFont, overflowX: "hidden" },
-  header: { marginBottom: 16 },
-  headerTitleBlock: { display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 240 },
+  header: { marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 0, flexWrap: "wrap" },
+  logoStrip: { display: "flex", alignItems: "center", justifyContent: "flex-start", gap: 0, marginLeft: 0, marginRight: 0, fontFamily: baseFont },
+  netCapitalLogoWrap: { display: "flex", alignItems: "center", justifyContent: "center", width: "auto", height: 58, background: "transparent", boxShadow: "none", overflow: "visible", padding: 0, marginLeft: 0, marginRight: 6, fontFamily: baseFont },
+  iiaLogoWrap: { display: "flex", alignItems: "center", justifyContent: "center", width: "auto", height: 92, background: "transparent", boxShadow: "none", overflow: "visible", padding: 0, marginLeft: 0, fontFamily: baseFont },
+  iiaLogo: { maxWidth: "100%", maxHeight: 90, objectFit: "contain", display: "block" },
+  netCapitalLogo: { maxWidth: "100%", maxHeight: 54, objectFit: "contain", display: "block", borderRadius: 9 },
+  headerTitleBlock: { display: "flex", flexDirection: "column", justifyContent: "center", minWidth: 240, margin: 0 },
   title: { margin: 0, fontSize: 24, fontWeight: 700, color: "#9BE564", textShadow: "0 0 14px rgba(122,201,67,0.42)", lineHeight: 1.15, fontFamily: baseFont },
   subtitle: { margin: "4px 0 0", color: "#d9ffc7", fontSize: 13, fontFamily: baseFont },
   tabs: { display: "flex", gap: 7, marginBottom: 16 },
@@ -1321,7 +1376,8 @@ const styles = {
   questionManageText: { color: "#f5fbff", fontSize: 13, lineHeight: 1.35, flex: "1 1 220px", fontFamily: baseFont },
   questionEmptyText: { color: "#d9ffc7", fontSize: 13, opacity: 0.85, fontFamily: baseFont },
   introOverlay: { position: "fixed", inset: 0, zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", backdropFilter: "blur(18px)", WebkitBackdropFilter: "blur(18px)", background: "rgba(2, 10, 20, 0.30)", animation: "introOverlayFade 2.2s ease forwards", pointerEvents: "none" },
-  introLionImage: { width: 420, maxWidth: "82vw", height: "auto", objectFit: "contain", animation: "introLogoFade 2.2s ease forwards", filter: "drop-shadow(0 0 28px rgba(75, 220, 230, 0.34))", opacity: 1, background: "transparent" }
+  introLionImage: { width: 420, maxWidth: "82vw", height: "auto", objectFit: "contain", animation: "introLogoFade 2.2s ease forwards", filter: "drop-shadow(0 0 28px rgba(75, 220, 230, 0.34))", opacity: 1, background: "transparent" },
+  footerTagline: { marginTop: 22, padding: "14px 10px", color: "#9BE564", fontSize: 24, fontWeight: 800, textAlign: "center", lineHeight: 1.2, textShadow: "0 0 12px rgba(155,229,100,0.34)", fontFamily: baseFont }
 };
 
 function runSelfTests() {
