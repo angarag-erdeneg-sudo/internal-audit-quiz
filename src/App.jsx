@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import lionImage from "./assets/lion.png";
 import iiaLogo from "./assets/iia-logo.png";
 import netCapitalLogo from "./assets/netcapital-logo.jfif";
@@ -14,9 +14,11 @@ import {
 const QUESTION_SECONDS = 20;
 const MAX_POINTS_PER_QUESTION = 1000;
 const SCORE_DECAY_POWER = 0.35;
-const ANSWER_FEEDBACK_DELAY_MS = 1200;
-const APP_UPDATE_CHECK_INTERVAL_MS = 60000;
-const LIVE_DATA_REFRESH_INTERVAL_MS = 10000;
+const FEEDBACK_DELAY_MS = 1200;
+const LIVE_REFRESH_MS = 10000;
+const QUIZ_MUSIC_INTERVAL_MS = 2200;
+const USER_KEY = "internal_audit_quiz_current_user";
+const SESSION_PREFIX = "internal_audit_quiz_session_";
 
 const DEPARTMENTS = [
   "Хүний нөөц, соёлын газар",
@@ -102,32 +104,6 @@ const DEPARTMENTS = [
   "Гүйцэтгэх удирдлага"
 ];
 
-const INITIAL_QUIZZES = [];
-const CURRENT_USER_STORAGE_KEY = "internal_audit_quiz_current_user";
-
-function getStoredCurrentUser() {
-  try {
-    if (typeof window === "undefined") return null;
-    const rawUser = window.localStorage.getItem(CURRENT_USER_STORAGE_KEY);
-    return rawUser ? JSON.parse(rawUser) : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveStoredCurrentUser(user) {
-  try {
-    if (typeof window === "undefined") return;
-    if (user) {
-      window.localStorage.setItem(CURRENT_USER_STORAGE_KEY, JSON.stringify(user));
-    } else {
-      window.localStorage.removeItem(CURRENT_USER_STORAGE_KEY);
-    }
-  } catch {
-    // Local storage is optional.
-  }
-}
-
 function normalizeText(value) {
   return String(value || "").trim().split(" ").filter(Boolean).join(" ");
 }
@@ -138,58 +114,67 @@ function normalizeEmail(value) {
 
 function isValidWorkEmail(value) {
   const email = normalizeEmail(value);
-  const allowedDomains = ["@netcapital.mn", "@netgroup.mn"];
-
-  return allowedDomains.some(function (domain) {
+  return ["@netcapital.mn", "@netgroup.mn"].some(function (domain) {
     return email.length > domain.length && email.endsWith(domain);
-  }) && !email.includes(" ");
+  });
 }
 
-function isValidDepartment(value) {
-  return DEPARTMENTS.includes(normalizeText(value));
-}
-
-function parseOptions(rawOptions) {
-  return String(rawOptions || "").split("\n").map(function (item) {
+function parseOptions(value) {
+  return String(value || "").split("\n").map(function (item) {
     return item.trim();
   }).filter(Boolean);
 }
 
-function clampNumber(value, min, max) {
+function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
-function calculateQuestionPoints(isCorrect, secondsLeft) {
+function shuffle(items) {
+  const result = items.slice();
+  for (let i = result.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = result[i];
+    result[i] = result[j];
+    result[j] = temp;
+  }
+  return result;
+}
+
+function shuffleQuestions(questions) {
+  return shuffle(questions || []).map(function (question) {
+    const optionItems = (question.options || []).map(function (text, originalIndex) {
+      return { text, originalIndex };
+    });
+    const mixed = shuffle(optionItems);
+    return {
+      ...question,
+      options: mixed.map(function (item) { return item.text; }),
+      optionOriginalIndexes: mixed.map(function (item) { return item.originalIndex; })
+    };
+  });
+}
+
+function calculatePoints(isCorrect, secondsLeft) {
   if (!isCorrect) return 0;
-  const safeSecondsLeft = clampNumber(Number(secondsLeft) || 0, 0, QUESTION_SECONDS);
-  const ratio = safeSecondsLeft / QUESTION_SECONDS;
+  const safeSeconds = clamp(Number(secondsLeft) || 0, 0, QUESTION_SECONDS);
+  const ratio = safeSeconds / QUESTION_SECONDS;
   return Math.round(Math.pow(ratio, SCORE_DECAY_POWER) * MAX_POINTS_PER_QUESTION);
+}
+
+function scoreSession(questions, answers, times) {
+  return (questions || []).reduce(function (sum, question) {
+    const selected = answers[question.id];
+    const isCorrect = Number(selected) === Number(question.answer);
+    const seconds = Object.prototype.hasOwnProperty.call(times || {}, question.id) ? times[question.id] : 0;
+    return sum + calculatePoints(isCorrect, seconds);
+  }, 0);
 }
 
 function formatScore(value) {
   return String(Math.round(Number(value || 0)));
 }
 
-function getPreciseSecondsLeft(questionEndsAt) {
-  if (!questionEndsAt) return QUESTION_SECONDS;
-  return clampNumber((questionEndsAt - Date.now()) / 1000, 0, QUESTION_SECONDS);
-}
-
-function scoreSubmission(quiz, answers, answerTimes) {
-  if (!quiz || !Array.isArray(quiz.questions)) return 0;
-  return quiz.questions.reduce(function (sum, question) {
-    const isCorrect = Number(answers[question.id]) === Number(question.answer);
-    const hasAnswerTime = Object.prototype.hasOwnProperty.call(answerTimes || {}, question.id);
-    const secondsLeft = hasAnswerTime ? answerTimes[question.id] : 0;
-    return sum + calculateQuestionPoints(isCorrect, secondsLeft);
-  }, 0);
-}
-
-function getActiveQuiz(quizzes) {
-  return quizzes.find(function (quiz) { return quiz.isOpen; }) || null;
-}
-
-function normalizeQuizFromApi(quiz) {
+function normalizeQuiz(quiz) {
   return {
     id: quiz.id,
     title: quiz.title,
@@ -205,7 +190,7 @@ function normalizeQuizFromApi(quiz) {
   };
 }
 
-function normalizeSubmissionFromApi(row) {
+function normalizeSubmission(row) {
   const profile = row.users_public || row.user || {};
   return {
     id: row.id || row.submission_id || String(row.quiz_id || row.quizId) + "-" + String(row.user_id || row.userId),
@@ -214,8 +199,7 @@ function normalizeSubmissionFromApi(row) {
     score: Number(row.score || 0),
     userName: profile.name || row.name || "-",
     department: profile.department || row.department || "-",
-    email: profile.email || row.email || "",
-    submittedAt: row.submitted_at || row.submittedAt || null
+    email: profile.email || row.email || ""
   };
 }
 
@@ -224,98 +208,162 @@ function buildLeaderboard(submissions) {
   submissions.forEach(function (submission) {
     const key = submission.userId || submission.email || submission.userName;
     if (!key) return;
-    const existing = grouped.get(key) || {
+    const row = grouped.get(key) || {
       id: key,
       name: submission.userName || "-",
       department: submission.department || "-",
+      email: submission.email || "",
       totalScore: 0,
       completed: 0
     };
-    existing.totalScore += Number(submission.score || 0);
-    existing.completed += 1;
-    grouped.set(key, existing);
+    row.name = submission.userName || row.name;
+    row.department = submission.department || row.department;
+    row.email = submission.email || row.email;
+    row.totalScore += Number(submission.score || 0);
+    row.completed += 1;
+    grouped.set(key, row);
   });
   return Array.from(grouped.values()).sort(function (a, b) {
     return b.totalScore - a.totalScore || b.completed - a.completed || a.name.localeCompare(b.name);
   });
 }
 
-function getAppAssetSignatureFromDocument(doc) {
-  if (!doc || !doc.querySelectorAll) return "";
-
-  const scripts = Array.from(doc.querySelectorAll("script[src]"))
-    .map(function (script) { return script.getAttribute("src") || ""; })
-    .filter(function (src) { return src.includes("/assets/") || src.includes("/src/"); })
-    .sort()
-    .join("|");
-
-  const stylesheets = Array.from(doc.querySelectorAll("link[rel='stylesheet'][href]"))
-    .map(function (link) { return link.getAttribute("href") || ""; })
-    .filter(function (href) { return href.includes("/assets/"); })
-    .sort()
-    .join("|");
-
-  return scripts + "::" + stylesheets;
-}
-
-async function hasNewAppVersion() {
-  if (typeof window === "undefined" || typeof document === "undefined") return false;
-  if (window.location.hostname === "localhost") return false;
-
-  const currentSignature = getAppAssetSignatureFromDocument(document);
-  if (!currentSignature) return false;
-
-  const response = await fetch(window.location.origin + window.location.pathname, {
-    cache: "no-store",
-    headers: {
-      "Cache-Control": "no-cache"
-    }
-  });
-
-  const html = await response.text();
-  const nextDocument = new DOMParser().parseFromString(html, "text/html");
-  const nextSignature = getAppAssetSignatureFromDocument(nextDocument);
-
-  return Boolean(nextSignature && currentSignature !== nextSignature);
-}
-
-function playFinishSound() {
+function getStoredUser() {
   try {
-    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-    if (!AudioContextClass) return;
-    const audioContext = new AudioContextClass();
-    const masterGain = audioContext.createGain();
-    masterGain.gain.setValueAtTime(0.45, audioContext.currentTime);
-    masterGain.connect(audioContext.destination);
-    [523.25, 659.25, 783.99, 1046.5, 1174.66].forEach(function (frequency, index) {
-      const oscillator = audioContext.createOscillator();
-      const gain = audioContext.createGain();
-      const startTime = audioContext.currentTime + index * 0.16;
-      const endTime = startTime + 0.2;
-      oscillator.type = "triangle";
-      oscillator.frequency.setValueAtTime(frequency, startTime);
-      gain.gain.setValueAtTime(0.0001, startTime);
-      gain.gain.exponentialRampToValueAtTime(0.28, startTime + 0.025);
-      gain.gain.exponentialRampToValueAtTime(0.0001, endTime);
-      oscillator.connect(gain);
-      gain.connect(masterGain);
-      oscillator.start(startTime);
-      oscillator.stop(endTime);
-    });
-  } catch (error) {
-    // Sound is optional.
+    const raw = window.localStorage.getItem(USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
   }
 }
 
-function getTabStyle(active) {
-  return active ? styles.tabActive : styles.tab;
+function saveStoredUser(user) {
+  try {
+    if (user) window.localStorage.setItem(USER_KEY, JSON.stringify(user));
+    else window.localStorage.removeItem(USER_KEY);
+  } catch {
+    // localStorage is optional.
+  }
 }
 
-function getOptionButtonStyle(isSelected) {
+function sessionKey(userId, quizId) {
+  return SESSION_PREFIX + String(userId || "guest") + "_" + String(quizId || "quiz");
+}
+
+function saveSession(userId, quizId, session) {
+  try {
+    if (userId && quizId && session) window.localStorage.setItem(sessionKey(userId, quizId), JSON.stringify(session));
+  } catch {
+    // localStorage is optional.
+  }
+}
+
+function loadSession(userId, quizId) {
+  try {
+    if (!userId || !quizId) return null;
+    const raw = window.localStorage.getItem(sessionKey(userId, quizId));
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearSession(userId, quizId) {
+  try {
+    if (userId && quizId) window.localStorage.removeItem(sessionKey(userId, quizId));
+  } catch {
+    // localStorage is optional.
+  }
+}
+
+function getAudioContext() {
+  const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextClass) return null;
+  if (!window.__auditQuizAudio) window.__auditQuizAudio = new AudioContextClass();
+  return window.__auditQuizAudio;
+}
+
+function unlockAudio() {
+  try {
+    const audio = getAudioContext();
+    if (!audio) return;
+    if (audio.state === "suspended") audio.resume();
+  } catch {
+    // audio is optional
+  }
+}
+
+function playTone(frequency, delay, duration, volume, type) {
+  try {
+    const audio = getAudioContext();
+    if (!audio) return;
+    if (audio.state === "suspended") audio.resume();
+    const oscillator = audio.createOscillator();
+    const gain = audio.createGain();
+    const start = audio.currentTime + delay;
+    const end = start + duration;
+    oscillator.type = type || "sine";
+    oscillator.frequency.setValueAtTime(frequency, start);
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(volume, start + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, end);
+    oscillator.connect(gain);
+    gain.connect(audio.destination);
+    oscillator.start(start);
+    oscillator.stop(end);
+  } catch {
+    // audio is optional
+  }
+}
+
+function playHurrySound(secondsLeft) {
+  if (secondsLeft > 5) return;
+  playTone(660, 0, 0.08, 0.05, "sine");
+}
+
+function playQuizMusicStep(step) {
+  const chords = [
+    [261.63, 329.63, 392.0],
+    [293.66, 369.99, 440.0],
+    [329.63, 392.0, 493.88],
+    [392.0, 493.88, 587.33]
+  ];
+  const chord = chords[step % chords.length];
+  chord.forEach(function (frequency, index) {
+    playTone(frequency, index * 0.18, 0.72, 0.045, "sine");
+  });
+}
+
+function playAnswerSound(isCorrect, score) {
+  unlockAudio();
+  if (isCorrect) {
+    playTone(659.25, 0, 0.12, 0.24, "triangle");
+    playTone(880.0, 0.10, 0.16, 0.26, "sine");
+    playTone(1174.66, 0.24, 0.20, 0.22, "triangle");
+    return;
+  }
+
+  playTone(392.0, 0, 0.12, 0.18, "sine");
+  playTone(329.63, 0.12, 0.16, 0.16, "triangle");
+  if (Number(score || 0) > 0) playTone(523.25, 0.28, 0.12, 0.12, "sine");
+}
+
+function playFinishSound() {
+  unlockAudio();
+  const notes = [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98];
+  notes.forEach(function (frequency, index) {
+    playTone(frequency, index * 0.13, 0.28, 0.30, index % 2 === 0 ? "triangle" : "sine");
+    playTone(frequency / 2, index * 0.13, 0.32, 0.10, "sine");
+  });
+  playTone(2093, 0.86, 0.45, 0.24, "triangle");
+}
+
+function getTimerFillStyle(questionEndsAt, currentTimeMs) {
+  const remainingMs = questionEndsAt ? clamp(questionEndsAt - currentTimeMs, 0, QUESTION_SECONDS * 1000) : QUESTION_SECONDS * 1000;
+  const percent = (remainingMs / (QUESTION_SECONDS * 1000)) * 100;
   return {
-    ...styles.optionButton,
-    background: isSelected ? "linear-gradient(180deg, rgba(122,201,67,0.24), rgba(1,122,193,0.10))" : "rgba(0,20,40,0.72)",
-    boxShadow: isSelected ? "0 0 18px rgba(122,201,67,0.30)" : "none"
+    ...styles.timerFill,
+    width: String(percent) + "%"
   };
 }
 
@@ -323,6 +371,7 @@ function getConfettiStyle(index) {
   const points = [[-230, -140], [-170, -190], [-110, -130], [-55, -215], [0, -155], [55, -215], [110, -130], [170, -190], [230, -140], [-245, -35], [-125, -20], [125, -20], [245, -35], [-220, 70], [-105, 85], [0, 105], [105, 85], [220, 70], [-190, 215], [-55, 220], [55, 220], [190, 215]];
   const colors = ["#9BE564", "#7AC943", "#42BFED", "#ffffff"];
   const point = points[index % points.length];
+
   return {
     position: "absolute",
     left: "50%",
@@ -345,28 +394,31 @@ function getConfettiStyle(index) {
   };
 }
 
+function getOptionButtonStyle(isSelected) {
+  return {
+    ...styles.optionButton,
+    background: isSelected ? "linear-gradient(180deg, rgba(122,201,67,0.24), rgba(1,122,193,0.10))" : "rgba(0,20,40,0.72)",
+    boxShadow: isSelected ? "0 0 18px rgba(122,201,67,0.30)" : "none"
+  };
+}
+
 export default function App() {
-  const [quizzes, setQuizzes] = useState(INITIAL_QUIZZES);
+  const [quizzes, setQuizzes] = useState([]);
   const [submissions, setSubmissions] = useState([]);
-  const [loading, setLoading] = useState(true);
   const [globalError, setGlobalError] = useState("");
-  const [updateAvailable, setUpdateAvailable] = useState(false);
   const [tab, setTab] = useState("quiz");
-  const [leaderboardSearch, setLeaderboardSearch] = useState("");
-  const [leaderboardPage, setLeaderboardPage] = useState(1);
-  const [currentUser, setCurrentUser] = useState(function () {
-    return getStoredCurrentUser();
-  });
-  const [isEditingName, setIsEditingName] = useState(false);
-  const [profileNameInput, setProfileNameInput] = useState("");
-  const [profileError, setProfileError] = useState("");
+  const [currentUser, setCurrentUser] = useState(getStoredUser);
   const [authMode, setAuthMode] = useState("login");
   const [loginEmail, setLoginEmail] = useState("");
   const [registerName, setRegisterName] = useState("");
   const [registerDepartment, setRegisterDepartment] = useState("");
   const [registerEmail, setRegisterEmail] = useState("");
   const [authError, setAuthError] = useState("");
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [profileNameInput, setProfileNameInput] = useState("");
+  const [profileError, setProfileError] = useState("");
   const [quizStarted, setQuizStarted] = useState(false);
+  const [shuffledQuestions, setShuffledQuestions] = useState([]);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [questionEndsAt, setQuestionEndsAt] = useState(null);
   const [answers, setAnswers] = useState({});
@@ -374,7 +426,10 @@ export default function App() {
   const [answerFeedback, setAnswerFeedback] = useState(null);
   const [animatedScore, setAnimatedScore] = useState(0);
   const [timerRunId, setTimerRunId] = useState(0);
+  const [currentTimeMs, setCurrentTimeMs] = useState(Date.now());
   const [lastResult, setLastResult] = useState(null);
+  const [leaderboardSearch, setLeaderboardSearch] = useState("");
+  const [leaderboardPage, setLeaderboardPage] = useState(1);
   const [isAdmin, setIsAdmin] = useState(false);
   const [pin, setPin] = useState("");
   const [adminPin, setAdminPin] = useState("");
@@ -383,43 +438,114 @@ export default function App() {
   const [adminQuizId, setAdminQuizId] = useState("");
   const [showIntro, setShowIntro] = useState(true);
 
-  const activeQuiz = getActiveQuiz(quizzes);
-  const currentQuestion = activeQuiz && activeQuiz.questions ? activeQuiz.questions[currentQuestionIndex] : null;
-  const selectedAdminQuiz = quizzes.find(function (quiz) { return quiz.id === adminQuizId; }) || quizzes[0] || null;
+  const timeoutRef = useRef(null);
+  const nextRef = useRef(null);
+  const soundRef = useRef(null);
+  const musicRef = useRef(null);
+  const musicStepRef = useRef(0);
+  const restoredRef = useRef(false);
+
+  const activeQuiz = useMemo(function () {
+    return quizzes.find(function (quiz) { return quiz.isOpen; }) || null;
+  }, [quizzes]);
+
+  const selectedAdminQuiz = useMemo(function () {
+    return quizzes.find(function (quiz) { return quiz.id === adminQuizId; }) || quizzes[0] || null;
+  }, [quizzes, adminQuizId]);
+
+  const currentQuestion = quizStarted ? shuffledQuestions[currentQuestionIndex] : null;
+
   const alreadySubmitted = Boolean(currentUser && activeQuiz && submissions.some(function (submission) {
     return submission.quizId === activeQuiz.id && submission.userId === currentUser.id;
   }));
-  const canStartQuiz = Boolean(currentUser && activeQuiz && activeQuiz.questions.length > 0 && !alreadySubmitted && !quizStarted);
 
   const leaderboard = useMemo(function () {
-    return buildLeaderboard(submissions);
-  }, [submissions]);
-
-  const rankedLeaderboard = useMemo(function () {
-    return leaderboard.map(function (row, index) {
+    return buildLeaderboard(submissions).map(function (row, index) {
       return { ...row, rank: index + 1 };
     });
-  }, [leaderboard]);
+  }, [submissions]);
 
   const filteredLeaderboard = useMemo(function () {
     const keyword = normalizeText(leaderboardSearch).toLowerCase();
-    if (!keyword) return rankedLeaderboard;
-
-    return rankedLeaderboard.filter(function (row) {
-      const haystack = [row.name, row.department, row.email]
-        .join(" ")
-        .toLowerCase();
-      return haystack.includes(keyword);
+    if (!keyword) return leaderboard;
+    return leaderboard.filter(function (row) {
+      return [row.name, row.department, row.email].join(" ").toLowerCase().includes(keyword);
     });
-  }, [rankedLeaderboard, leaderboardSearch]);
+  }, [leaderboard, leaderboardSearch]);
 
-  const leaderboardPageSize = 10;
-  const leaderboardTotalPages = Math.max(1, Math.ceil(filteredLeaderboard.length / leaderboardPageSize));
-  const safeLeaderboardPage = Math.min(leaderboardPage, leaderboardTotalPages);
-  const paginatedLeaderboard = filteredLeaderboard.slice(
-    (safeLeaderboardPage - 1) * leaderboardPageSize,
-    safeLeaderboardPage * leaderboardPageSize
-  );
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(filteredLeaderboard.length / pageSize));
+  const safePage = Math.min(leaderboardPage, totalPages);
+  const pageRows = filteredLeaderboard.slice((safePage - 1) * pageSize, safePage * pageSize);
+
+  const clearTimers = useCallback(function clearTimersCallback() {
+    window.clearTimeout(timeoutRef.current);
+    window.clearTimeout(nextRef.current);
+    window.clearInterval(soundRef.current);
+    window.clearInterval(musicRef.current);
+  }, []);
+
+  const resetQuiz = useCallback(function resetQuiz(clearResult) {
+    clearTimers();
+    setQuizStarted(false);
+    setShuffledQuestions([]);
+    setCurrentQuestionIndex(0);
+    setQuestionEndsAt(null);
+    setAnswers({});
+    setAnswerTimes({});
+    setAnswerFeedback(null);
+    setAnimatedScore(0);
+    if (clearResult) setLastResult(null);
+  }, [clearTimers]);
+
+  const refreshData = useCallback(async function refreshData(options = {}) {
+    const silent = Boolean(options.silent);
+    try {
+      if (!silent) setGlobalError("");
+      const data = await loadBootstrap();
+      const nextQuizzes = (data.quizzes || []).map(normalizeQuiz);
+      const nextSubmissions = (data.leaderboard || data.submissions || []).map(normalizeSubmission);
+      setQuizzes(nextQuizzes);
+      setSubmissions(nextSubmissions);
+      setAdminQuizId(function (previous) {
+        return previous || (nextQuizzes[0] ? nextQuizzes[0].id : "");
+      });
+    } catch (error) {
+      if (!silent) setGlobalError(error.message || "Мэдээлэл татах үед алдаа гарлаа.");
+    }
+  }, []);
+
+  const finishQuiz = useCallback(async function finishQuiz(finalAnswers, finalTimes, optimisticScore) {
+    if (!currentUser || !activeQuiz) return;
+    try {
+      const data = await apiSubmitAnswer({ userId: currentUser.id, quizId: activeQuiz.id, answers: finalAnswers, answerTimes: finalTimes });
+      const backendScore = data.submission && typeof data.submission.score === "number" ? data.submission.score : optimisticScore;
+      clearSession(currentUser.id, activeQuiz.id);
+      setLastResult({ quizTitle: activeQuiz.title, score: backendScore });
+      playFinishSound();
+      resetQuiz(false);
+      await refreshData({ silent: true });
+    } catch (error) {
+      clearSession(currentUser.id, activeQuiz.id);
+      setGlobalError(error.message || "Оноо хадгалах үед алдаа гарлаа.");
+      setLastResult({ quizTitle: activeQuiz.title, score: optimisticScore });
+      resetQuiz(false);
+    }
+  }, [currentUser, activeQuiz, refreshData, resetQuiz]);
+
+  const scheduleNext = useCallback(function scheduleNext(nextIndex, finalAnswers, finalTimes, finalScore) {
+    window.clearTimeout(nextRef.current);
+    nextRef.current = window.setTimeout(function () {
+      if (nextIndex >= shuffledQuestions.length) {
+        finishQuiz(finalAnswers, finalTimes, finalScore);
+        return;
+      }
+      setCurrentQuestionIndex(nextIndex);
+      setQuestionEndsAt(Date.now() + QUESTION_SECONDS * 1000);
+      setAnswerFeedback(null);
+      setTimerRunId(function (previous) { return previous + 1; });
+    }, FEEDBACK_DELAY_MS);
+  }, [finishQuiz, shuffledQuestions.length]);
 
   useEffect(function () {
     const timer = window.setTimeout(function () { setShowIntro(false); }, 2200);
@@ -427,105 +553,113 @@ export default function App() {
   }, []);
 
   useEffect(function () {
-    refreshData();
-  }, []);
+    const timer = window.setTimeout(function () { refreshData(); }, 0);
+    return function () { window.clearTimeout(timer); };
+  }, [refreshData]);
 
   useEffect(function () {
-    let stopped = false;
-    let intervalId = 0;
-
-    async function checkForUpdate() {
-      try {
-        const hasUpdate = await hasNewAppVersion();
-        if (!hasUpdate || stopped) return;
-
-        if (!quizStarted) {
-          window.location.reload();
-          return;
-        }
-
-        setUpdateAvailable(true);
-      } catch {
-        // Update checks should never block the app.
-      }
-    }
-
-    function handleVisibilityChange() {
-      if (!document.hidden) checkForUpdate();
-    }
-
-    window.addEventListener("focus", checkForUpdate);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    intervalId = window.setInterval(checkForUpdate, APP_UPDATE_CHECK_INTERVAL_MS);
-    checkForUpdate();
-
-    return function () {
-      stopped = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", checkForUpdate);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [quizStarted]);
-
-  useEffect(function () {
-    saveStoredCurrentUser(currentUser);
+    saveStoredUser(currentUser);
   }, [currentUser]);
 
   useEffect(function () {
-    resetQuizState(false);
-  }, [activeQuiz ? activeQuiz.id : null, currentUser ? currentUser.id : null]);
-
-  useEffect(function () {
-    let stopped = false;
-    let intervalId = 0;
-
-    async function refreshLiveData() {
-      if (stopped) return;
-      if (quizStarted) return;
-
-      await refreshData({ silent: true });
-    }
-
-    function handleFocusRefresh() {
-      refreshLiveData();
-    }
-
-    window.addEventListener("focus", handleFocusRefresh);
-    intervalId = window.setInterval(refreshLiveData, LIVE_DATA_REFRESH_INTERVAL_MS);
-
-    return function () {
-      stopped = true;
-      window.clearInterval(intervalId);
-      window.removeEventListener("focus", handleFocusRefresh);
-    };
-  }, [quizStarted]);
-
-  useEffect(function () {
-    if (!adminQuizId && quizzes.length > 0) setAdminQuizId(quizzes[0].id);
-  }, [adminQuizId, quizzes]);
-
-  useEffect(function () {
-    setLeaderboardPage(1);
+    const timer = window.setTimeout(function () { setLeaderboardPage(1); }, 0);
+    return function () { window.clearTimeout(timer); };
   }, [leaderboardSearch]);
 
   useEffect(function () {
-    if (!quizStarted || !currentQuestion || !questionEndsAt || answerFeedback) return undefined;
-    let frameId = 0;
-    function updateTimer() {
-      const secondsLeft = getPreciseSecondsLeft(questionEndsAt);
-      if (secondsLeft <= 0) {
-        const updatedTimes = { ...answerTimes, [currentQuestion.id]: 0 };
-        const previousScore = scoreSubmission(activeQuiz, answers, answerTimes);
-        const cumulativeScore = scoreSubmission(activeQuiz, answers, updatedTimes);
-        setAnswerTimes(updatedTimes);
-        setAnswerFeedback({ questionId: currentQuestion.id, isCorrect: false, score: 0, previousScore, cumulativeScore, message: "Хугацаа дууслаа" });
-        return;
-      }
-      frameId = window.requestAnimationFrame(updateTimer);
-    }
-    frameId = window.requestAnimationFrame(updateTimer);
-    return function () { window.cancelAnimationFrame(frameId); };
-  }, [quizStarted, currentQuestion ? currentQuestion.id : null, questionEndsAt, answerFeedback, activeQuiz, answers, answerTimes]);
+    if (quizStarted) return undefined;
+    const id = window.setInterval(function () { refreshData({ silent: true }); }, LIVE_REFRESH_MS);
+    return function () { window.clearInterval(id); };
+  }, [quizStarted, refreshData]);
+
+  useEffect(function () {
+    if (!currentUser || !activeQuiz || alreadySubmitted || restoredRef.current) return;
+    const saved = loadSession(currentUser.id, activeQuiz.id);
+    restoredRef.current = true;
+    if (!saved || !Array.isArray(saved.questions) || saved.questions.length === 0) return;
+    const remainingMs = clamp(Number(saved.remainingMs) || QUESTION_SECONDS * 1000, 0, QUESTION_SECONDS * 1000);
+    setShuffledQuestions(saved.questions);
+    setCurrentQuestionIndex(clamp(Number(saved.index) || 0, 0, saved.questions.length - 1));
+    setAnswers(saved.answers || {});
+    setAnswerTimes(saved.times || {});
+    setAnimatedScore(scoreSession(saved.questions, saved.answers || {}, saved.times || {}));
+    setQuestionEndsAt(Date.now() + remainingMs);
+    setQuizStarted(true);
+    setTimerRunId(function (previous) { return previous + 1; });
+  }, [currentUser, activeQuiz, alreadySubmitted]);
+
+  useEffect(function () {
+    if (!quizStarted || !currentUser || !activeQuiz || shuffledQuestions.length === 0 || answerFeedback) return undefined;
+    const saveCurrent = function () {
+      const remainingMs = questionEndsAt ? clamp(questionEndsAt - Date.now(), 0, QUESTION_SECONDS * 1000) : QUESTION_SECONDS * 1000;
+      saveSession(currentUser.id, activeQuiz.id, {
+        quizId: activeQuiz.id,
+        questions: shuffledQuestions,
+        index: currentQuestionIndex,
+        answers,
+        times: answerTimes,
+        remainingMs,
+        savedAt: Date.now()
+      });
+    };
+    const id = window.setInterval(saveCurrent, 500);
+    window.addEventListener("beforeunload", saveCurrent);
+    document.addEventListener("visibilitychange", saveCurrent);
+    return function () {
+      window.clearInterval(id);
+      window.removeEventListener("beforeunload", saveCurrent);
+      document.removeEventListener("visibilitychange", saveCurrent);
+    };
+  }, [quizStarted, currentUser, activeQuiz, shuffledQuestions, currentQuestionIndex, answers, answerTimes, questionEndsAt, answerFeedback]);
+
+  useEffect(function () {
+    if (!quizStarted || !currentQuestion || answerFeedback || !questionEndsAt) return undefined;
+    const remainingMs = clamp(questionEndsAt - Date.now(), 0, QUESTION_SECONDS * 1000);
+    window.clearTimeout(timeoutRef.current);
+    timeoutRef.current = window.setTimeout(function () {
+      const nextTimes = { ...answerTimes, [currentQuestion.id]: 0 };
+      const previousScore = scoreSession(shuffledQuestions, answers, answerTimes);
+      const nextScore = scoreSession(shuffledQuestions, answers, nextTimes);
+      setAnswerTimes(nextTimes);
+      playAnswerSound(false, 0);
+      setAnswerFeedback({ questionId: currentQuestion.id, isCorrect: false, score: 0, previousScore, cumulativeScore: nextScore, message: "Хугацаа дууслаа" });
+      setAnimatedScore(previousScore);
+      scheduleNext(currentQuestionIndex + 1, answers, nextTimes, nextScore);
+    }, remainingMs);
+    return function () { window.clearTimeout(timeoutRef.current); };
+  }, [quizStarted, currentQuestion, answerFeedback, questionEndsAt, answerTimes, shuffledQuestions, answers, scheduleNext, currentQuestionIndex]);
+
+  useEffect(function () {
+    if (!quizStarted || !questionEndsAt || answerFeedback) return undefined;
+    setCurrentTimeMs(Date.now());
+    const id = window.setInterval(function () {
+      setCurrentTimeMs(Date.now());
+    }, 250);
+    return function () { window.clearInterval(id); };
+  }, [quizStarted, questionEndsAt, answerFeedback]);
+
+  useEffect(function () {
+    if (!quizStarted || !currentQuestion || answerFeedback || !questionEndsAt) return undefined;
+    window.clearInterval(soundRef.current);
+    soundRef.current = window.setInterval(function () {
+      const secondsLeft = Math.ceil(clamp((questionEndsAt - Date.now()) / 1000, 0, QUESTION_SECONDS));
+      if (secondsLeft > 0) playHurrySound(secondsLeft);
+    }, 1000);
+    return function () { window.clearInterval(soundRef.current); };
+  }, [quizStarted, currentQuestion, answerFeedback, questionEndsAt]);
+
+  useEffect(function () {
+    if (!quizStarted) return undefined;
+    unlockAudio();
+    window.clearInterval(musicRef.current);
+    playQuizMusicStep(musicStepRef.current);
+    musicStepRef.current += 1;
+    musicRef.current = window.setInterval(function () {
+      playQuizMusicStep(musicStepRef.current);
+      musicStepRef.current += 1;
+    }, QUIZ_MUSIC_INTERVAL_MS);
+    return function () { window.clearInterval(musicRef.current); };
+  }, [quizStarted]);
 
   useEffect(function () {
     if (!answerFeedback) return undefined;
@@ -533,64 +667,71 @@ export default function App() {
     const end = Number(answerFeedback.cumulativeScore || 0);
     const startedAt = Date.now();
     let frameId = 0;
-    function animateScore() {
-      const progress = clampNumber((Date.now() - startedAt) / 850, 0, 1);
+    function animate() {
+      const progress = clamp((Date.now() - startedAt) / 850, 0, 1);
       const eased = 1 - Math.pow(1 - progress, 3);
       setAnimatedScore(Math.round(start + (end - start) * eased));
-      if (progress < 1) frameId = window.requestAnimationFrame(animateScore);
+      if (progress < 1) frameId = window.requestAnimationFrame(animate);
     }
-    setAnimatedScore(start);
-    frameId = window.requestAnimationFrame(animateScore);
+    frameId = window.requestAnimationFrame(animate);
     return function () { window.cancelAnimationFrame(frameId); };
-  }, [answerFeedback ? answerFeedback.questionId : null, answerFeedback ? answerFeedback.cumulativeScore : null]);
+  }, [answerFeedback]);
 
-  useEffect(function () {
-    if (!quizStarted || !answerFeedback) return undefined;
-    const timer = window.setTimeout(function () { goToNextQuestion(); }, ANSWER_FEEDBACK_DELAY_MS);
-    return function () { window.clearTimeout(timer); };
-  }, [quizStarted, answerFeedback ? answerFeedback.questionId : null]);
-
-  async function refreshData(options = {}) {
-    const silent = Boolean(options.silent);
-
-    try {
-      if (!silent) setGlobalError("");
-      const data = await loadBootstrap();
-      const normalizedQuizzes = (data.quizzes || []).map(normalizeQuizFromApi);
-      const normalizedSubmissions = (data.leaderboard || data.submissions || []).map(normalizeSubmissionFromApi);
-      setQuizzes(normalizedQuizzes);
-      setSubmissions(normalizedSubmissions);
-      if (!adminQuizId && normalizedQuizzes.length > 0) setAdminQuizId(normalizedQuizzes[0].id);
-    } catch (error) {
-      if (!silent) {
-        setGlobalError(error.message || "Мэдээлэл татах үед алдаа гарлаа.");
-      }
-    } finally {
-      if (!silent) setLoading(false);
-    }
+  function startQuiz() {
+    if (!currentUser || !activeQuiz || alreadySubmitted || quizStarted) return;
+    unlockAudio();
+    playQuizMusicStep(0);
+    clearSession(currentUser.id, activeQuiz.id);
+    const questions = shuffleQuestions(activeQuiz.questions);
+    setShuffledQuestions(questions);
+    setCurrentQuestionIndex(0);
+    setAnswers({});
+    setAnswerTimes({});
+    setAnswerFeedback(null);
+    setAnimatedScore(0);
+    setLastResult(null);
+    setQuestionEndsAt(Date.now() + QUESTION_SECONDS * 1000);
+    setTimerRunId(function (previous) { return previous + 1; });
+    setQuizStarted(true);
+    saveSession(currentUser.id, activeQuiz.id, {
+      quizId: activeQuiz.id,
+      questions,
+      index: 0,
+      answers: {},
+      times: {},
+      remainingMs: QUESTION_SECONDS * 1000,
+      savedAt: Date.now()
+    });
   }
 
-  function clearAuthFeedback() {
-    setAuthError("");
-  }
-
-  function switchAuthMode(nextMode) {
-    setAuthMode(nextMode);
-    clearAuthFeedback();
+  function chooseAnswer(optionIndex) {
+    if (!currentQuestion || answerFeedback) return;
+    window.clearTimeout(timeoutRef.current);
+    const secondsLeft = clamp((questionEndsAt - Date.now()) / 1000, 0, QUESTION_SECONDS);
+    const selectedOriginalIndex = currentQuestion.optionOriginalIndexes ? currentQuestion.optionOriginalIndexes[optionIndex] : optionIndex;
+    const isCorrect = Number(selectedOriginalIndex) === Number(currentQuestion.answer);
+    const earned = calculatePoints(isCorrect, secondsLeft);
+    const nextAnswers = { ...answers, [currentQuestion.id]: selectedOriginalIndex };
+    const nextTimes = { ...answerTimes, [currentQuestion.id]: secondsLeft };
+    const previousScore = scoreSession(shuffledQuestions, answers, answerTimes);
+    const nextScore = scoreSession(shuffledQuestions, nextAnswers, nextTimes);
+    setAnswers(nextAnswers);
+    setAnswerTimes(nextTimes);
+    playAnswerSound(isCorrect, earned);
+    setAnswerFeedback({ questionId: currentQuestion.id, isCorrect, score: earned, previousScore, cumulativeScore: nextScore, message: isCorrect ? "Зөв хариулт" : "Буруу хариулт" });
+    scheduleNext(currentQuestionIndex + 1, nextAnswers, nextTimes, nextScore);
   }
 
   async function loginUser() {
     const email = normalizeEmail(loginEmail);
-    if (!email) {
-      setAuthError("Имэйлээ оруулна уу.");
-      return;
-    }
+    if (!email) return setAuthError("Имэйлээ оруулна уу.");
     try {
       setAuthError("");
       const data = await apiLogin(email);
       setCurrentUser(data.user);
       setLoginEmail("");
-      await refreshData();
+      restoredRef.current = false;
+      await refreshData({ silent: true });
     } catch (error) {
       setAuthError(error.message || "Нэвтрэх үед алдаа гарлаа.");
     }
@@ -600,22 +741,9 @@ export default function App() {
     const name = normalizeText(registerName);
     const department = normalizeText(registerDepartment);
     const email = normalizeEmail(registerEmail);
-    if (!name) {
-      setAuthError("Овог нэрээ оруулна уу.");
-      return;
-    }
-    if (!department) {
-      setAuthError("Газар сонгоно уу.");
-      return;
-    }
-    if (!isValidDepartment(department)) {
-      setAuthError("Газар эсвэл салбараа зөв сонгоно уу.");
-      return;
-    }
-    if (!isValidWorkEmail(email)) {
-      setAuthError("Зөвхөн @netcapital.mn эсвэл @netgroup.mn имэйл ашиглана уу.");
-      return;
-    }
+    if (!name) return setAuthError("Овог нэрээ оруулна уу.");
+    if (!department || !DEPARTMENTS.includes(department)) return setAuthError("Газар эсвэл салбараа зөв сонгоно уу.");
+    if (!isValidWorkEmail(email)) return setAuthError("Зөвхөн @netcapital.mn эсвэл @netgroup.mn имэйл ашиглана уу.");
     try {
       setAuthError("");
       const data = await apiRegister({ email, name, department });
@@ -623,126 +751,37 @@ export default function App() {
       setRegisterName("");
       setRegisterDepartment("");
       setRegisterEmail("");
-      await refreshData();
+      restoredRef.current = false;
+      await refreshData({ silent: true });
     } catch (error) {
       setAuthError(error.message || "Бүртгүүлэх үед алдаа гарлаа.");
     }
   }
 
-  function resetQuizState(clearResult = true) {
-    setQuizStarted(false);
-    setCurrentQuestionIndex(0);
-    setQuestionEndsAt(null);
-    setAnswerFeedback(null);
-    setAnimatedScore(0);
-    setAnswers({});
-    setAnswerTimes({});
-    if (clearResult) setLastResult(null);
-  }
-
-  function startQuiz() {
-    if (!canStartQuiz) return;
-    setQuizStarted(true);
-    setCurrentQuestionIndex(0);
-    setTimerRunId(function (previous) { return previous + 1; });
-    setQuestionEndsAt(Date.now() + QUESTION_SECONDS * 1000);
-    setAnswerFeedback(null);
-    setAnimatedScore(0);
-    setAnswers({});
-    setAnswerTimes({});
-    setLastResult(null);
-  }
-
-  function chooseAnswer(optionIndex) {
-    if (!currentQuestion || answerFeedback) return;
-    const questionId = currentQuestion.id;
-    const secondsLeft = getPreciseSecondsLeft(questionEndsAt);
-    const isCorrect = Number(optionIndex) === Number(currentQuestion.answer);
-    const earnedScore = calculateQuestionPoints(isCorrect, secondsLeft);
-    const updatedAnswers = { ...answers, [questionId]: optionIndex };
-    const updatedAnswerTimes = { ...answerTimes, [questionId]: secondsLeft };
-    const previousScore = scoreSubmission(activeQuiz, answers, answerTimes);
-    const cumulativeScore = scoreSubmission(activeQuiz, updatedAnswers, updatedAnswerTimes);
-    setAnswers(updatedAnswers);
-    setAnswerTimes(updatedAnswerTimes);
-    setAnswerFeedback({ questionId, isCorrect, score: earnedScore, previousScore, cumulativeScore, message: isCorrect ? "Зөв хариулт" : "Буруу хариулт" });
-  }
-
-  function goToNextQuestion() {
-    if (!activeQuiz) return;
-    if (currentQuestionIndex >= activeQuiz.questions.length - 1) {
-      finishQuiz();
-      return;
-    }
-    setCurrentQuestionIndex(function (previous) { return previous + 1; });
-    setTimerRunId(function (previous) { return previous + 1; });
-    setQuestionEndsAt(Date.now() + QUESTION_SECONDS * 1000);
-    setAnswerFeedback(null);
-  }
-
-  async function finishQuiz() {
-    if (!currentUser || !activeQuiz || alreadySubmitted) return;
-    const optimisticScore = answerFeedback && typeof answerFeedback.cumulativeScore === "number" ? answerFeedback.cumulativeScore : scoreSubmission(activeQuiz, answers, answerTimes);
-    try {
-      const data = await apiSubmitAnswer({ userId: currentUser.id, quizId: activeQuiz.id, answers, answerTimes });
-      const backendScore = data.submission && typeof data.submission.score === "number" ? data.submission.score : optimisticScore;
-      setLastResult({ quizTitle: activeQuiz.title, score: backendScore });
-      playFinishSound();
-      resetQuizState(false);
-      await refreshData();
-    } catch (error) {
-      setGlobalError(error.message || "Оноо хадгалах үед алдаа гарлаа.");
-      setLastResult({ quizTitle: activeQuiz.title, score: optimisticScore });
-      resetQuizState(false);
-    }
-  }
-
-  async function updateCurrentUserName() {
+  async function updateName() {
     if (!currentUser) return;
-
     const name = normalizeText(profileNameInput);
-
-    if (!name) {
-      setProfileError("Нэрээ оруулна уу.");
-      return;
-    }
-
+    if (!name) return setProfileError("Нэрээ оруулна уу.");
     try {
-      setProfileError("");
       const data = await apiUpdateProfile({ userId: currentUser.id, name });
-      const updatedUser = data.user || { ...currentUser, name };
-      setCurrentUser(updatedUser);
-      setProfileNameInput("");
+      setCurrentUser(data.user || { ...currentUser, name });
       setIsEditingName(false);
-      await refreshData();
+      setProfileNameInput("");
+      setProfileError("");
+      await refreshData({ silent: true });
     } catch (error) {
       setProfileError(error.message || "Нэр солих үед алдаа гарлаа.");
     }
   }
 
-  function startEditingName() {
-    if (!currentUser) return;
-    setProfileNameInput(currentUser.name || "");
-    setProfileError("");
-    setIsEditingName(true);
-  }
-
-  function cancelEditingName() {
-    setProfileNameInput("");
-    setProfileError("");
-    setIsEditingName(false);
-  }
-
   function logout() {
+    resetQuiz(true);
     setCurrentUser(null);
-    resetQuizState();
+    restoredRef.current = false;
   }
 
   async function loginAdmin() {
-    if (!pin.trim()) {
-      alert("Нууц код оруулна уу.");
-      return;
-    }
+    if (!pin.trim()) return alert("Нууц код оруулна уу.");
     try {
       await apiAdmin(pin, { action: "ping" });
       setAdminPin(pin);
@@ -758,18 +797,18 @@ export default function App() {
     try {
       await apiAdmin(adminPin, { action: "createQuiz", title: newQuizTitle.trim() });
       setNewQuizTitle("");
-      await refreshData();
+      await refreshData({ silent: true });
     } catch (error) {
       alert(error.message || "Quiz нэмэх үед алдаа гарлаа.");
     }
   }
 
-  async function toggleQuizOpen(quizId) {
+  async function toggleQuiz(quizId) {
     const quiz = quizzes.find(function (item) { return item.id === quizId; });
     if (!quiz) return;
     try {
       await apiAdmin(adminPin, { action: "toggleQuiz", quizId, isOpen: !quiz.isOpen });
-      await refreshData();
+      await refreshData({ silent: true });
     } catch (error) {
       alert(error.message || "Quiz төлөв солих үед алдаа гарлаа.");
     }
@@ -777,48 +816,36 @@ export default function App() {
 
   async function deleteQuiz(quizId) {
     const quiz = quizzes.find(function (item) { return item.id === quizId; });
-    if (quiz && quiz.isOpen) {
-      alert("Идэвхтэй quiz-ийг устгах боломжгүй. Эхлээд хаана уу.");
-      return;
-    }
+    if (quiz && quiz.isOpen) return alert("Идэвхтэй quiz-ийг устгах боломжгүй. Эхлээд хаана уу.");
     try {
       await apiAdmin(adminPin, { action: "deleteQuiz", quizId });
-      await refreshData();
+      await refreshData({ silent: true });
     } catch (error) {
       alert(error.message || "Quiz устгах үед алдаа гарлаа.");
     }
   }
 
-  async function addQuestionToQuiz() {
+  async function addQuestion() {
     const options = parseOptions(newQuestion.options);
     const answerIndex = Number(newQuestion.answer) - 1;
     const quizId = selectedAdminQuiz ? selectedAdminQuiz.id : adminQuizId;
-    if (!quizId) {
-      alert("Quiz сонгоно уу.");
-      return;
-    }
-    if (!newQuestion.text.trim() || options.length < 2 || answerIndex < 0 || answerIndex >= options.length) {
-      alert("Асуулт, сонголт, зөв хариултаа шалгана уу.");
-      return;
-    }
+    if (!quizId) return alert("Quiz сонгоно уу.");
+    if (!newQuestion.text.trim() || options.length < 2 || answerIndex < 0 || answerIndex >= options.length) return alert("Асуулт, сонголт, зөв хариултаа шалгана уу.");
     try {
       await apiAdmin(adminPin, { action: "createQuestion", quizId, text: newQuestion.text.trim(), options, answerIndex });
       setNewQuestion({ text: "", options: "", answer: 1 });
-      await refreshData();
+      await refreshData({ silent: true });
     } catch (error) {
       alert(error.message || "Асуулт нэмэх үед алдаа гарлаа.");
     }
   }
 
-  async function deleteQuestionFromQuiz(quizId, questionId) {
+  async function deleteQuestion(quizId, questionId) {
     const quiz = quizzes.find(function (item) { return item.id === quizId; });
-    if (quiz && quiz.isOpen) {
-      alert("Идэвхтэй quiz-ийн асуултыг устгах боломжгүй. Эхлээд quiz-ийг хаана уу.");
-      return;
-    }
+    if (quiz && quiz.isOpen) return alert("Идэвхтэй quiz-ийн асуултыг устгах боломжгүй. Эхлээд quiz-ийг хаана уу.");
     try {
       await apiAdmin(adminPin, { action: "deleteQuestion", questionId });
-      await refreshData();
+      await refreshData({ silent: true });
     } catch (error) {
       alert(error.message || "Асуулт устгах үед алдаа гарлаа.");
     }
@@ -828,25 +855,22 @@ export default function App() {
     return (
       <>
         <div className="auth-switch" style={styles.authSwitch}>
-          <button onClick={function () { switchAuthMode("login"); }} style={authMode === "login" ? styles.authSwitchActive : styles.authSwitchButton}>Нэвтрэх</button>
-          <button onClick={function () { switchAuthMode("register"); }} style={authMode === "register" ? styles.authSwitchActive : styles.authSwitchButton}>Бүртгүүлэх</button>
+          <button onClick={function () { setAuthMode("login"); setAuthError(""); }} style={authMode === "login" ? styles.authSwitchActive : styles.authSwitchButton}>Нэвтрэх</button>
+          <button onClick={function () { setAuthMode("register"); setAuthError(""); }} style={authMode === "register" ? styles.authSwitchActive : styles.authSwitchButton}>Бүртгүүлэх</button>
         </div>
-        {authMode === "login" && (
+        {authMode === "login" ? (
           <div>
             <label style={styles.label}>Цахим шуудан</label>
             <input type="email" placeholder="name@netcapital.mn / name@netgroup.mn" value={loginEmail} onChange={function (event) { setLoginEmail(event.target.value); }} onKeyDown={function (event) { if (event.key === "Enter") loginUser(); }} style={styles.input} />
             <div style={styles.centerAction}><button onClick={loginUser} style={styles.primaryButton}>Нэвтрэх</button></div>
           </div>
-        )}
-        {authMode === "register" && (
+        ) : (
           <div>
             <label style={styles.label}>Овог нэр</label>
             <input type="text" placeholder="Овог нэр" value={registerName} onChange={function (event) { setRegisterName(event.target.value); }} style={styles.input} />
             <label style={styles.label}>Газар</label>
             <input type="text" list="department-options" placeholder="Газар, салбараа оруулна уу" value={registerDepartment} onChange={function (event) { setRegisterDepartment(event.target.value); }} style={styles.input} />
-            <datalist id="department-options">
-              {DEPARTMENTS.map(function (department) { return <option key={department} value={department} />; })}
-            </datalist>
+            <datalist id="department-options">{DEPARTMENTS.map(function (department) { return <option key={department} value={department} />; })}</datalist>
             <label style={styles.label}>Ажлын цахим шуудан</label>
             <input type="email" placeholder="name@netcapital.mn / name@netgroup.mn" value={registerEmail} onChange={function (event) { setRegisterEmail(event.target.value); }} style={styles.input} />
             <div style={styles.centerAction}><button onClick={registerUser} style={styles.primaryButton}>Бүртгүүлэх</button></div>
@@ -865,21 +889,14 @@ export default function App() {
           {!isEditingName ? (
             <div style={styles.profileNameRow}>
               <strong style={styles.profileValue}>{currentUser.name}</strong>
-              <button onClick={startEditingName} style={styles.smallSecondaryButton}>Солих</button>
+              <button onClick={function () { setProfileNameInput(currentUser.name || ""); setIsEditingName(true); }} style={styles.smallSecondaryButton}>Солих</button>
             </div>
           ) : (
             <div style={styles.profileEditBox}>
-              <input
-                type="text"
-                placeholder="Шинэ нэр"
-                value={profileNameInput}
-                onChange={function (event) { setProfileNameInput(event.target.value); }}
-                onKeyDown={function (event) { if (event.key === "Enter") updateCurrentUserName(); }}
-                style={styles.input}
-              />
+              <input type="text" placeholder="Шинэ нэр" value={profileNameInput} onChange={function (event) { setProfileNameInput(event.target.value); }} onKeyDown={function (event) { if (event.key === "Enter") updateName(); }} style={styles.input} />
               <div style={styles.profileEditActions}>
-                <button onClick={updateCurrentUserName} style={styles.primaryButton}>Хадгалах</button>
-                <button onClick={cancelEditingName} style={styles.secondaryButton}>Болих</button>
+                <button onClick={updateName} style={styles.primaryButton}>Хадгалах</button>
+                <button onClick={function () { setProfileNameInput(""); setProfileError(""); setIsEditingName(false); }} style={styles.secondaryButton}>Болих</button>
               </div>
             </div>
           )}
@@ -895,11 +912,11 @@ export default function App() {
     return (
       <div className="start-panel" style={styles.startPanel}>
         <h2 className="quiz-title" style={styles.quizTitle}>{activeQuiz ? activeQuiz.title : "Quiz алга"}</h2>
-        {!loading && !currentUser && <div style={styles.smallEmpty}>Нэвтэрнэ үү.</div>}
+        {!currentUser && <div style={styles.smallEmpty}>Нэвтэрнэ үү.</div>}
         {currentUser && !activeQuiz && <Empty text="Идэвхтэй асуулт алга." />}
         {currentUser && activeQuiz && activeQuiz.questions.length === 0 && <Empty text="Асуулт алга." />}
         {currentUser && alreadySubmitted && <Empty text="Та энэ асуултыг өгсөн байна." />}
-        {canStartQuiz && <button className="big-start-button" onClick={startQuiz} style={styles.bigStartButton}>Эхлэх</button>}
+        {currentUser && activeQuiz && !alreadySubmitted && activeQuiz.questions.length > 0 && !quizStarted && <button className="big-start-button" onClick={startQuiz} style={styles.bigStartButton}>Эхлэх</button>}
       </div>
     );
   }
@@ -908,15 +925,14 @@ export default function App() {
     return (
       <div className="question-stage" style={styles.questionStage}>
         <div style={answerFeedback ? styles.questionContentBlurred : styles.questionContent}>
-          <div style={styles.timerTrack}>
-            <div key={timerRunId} style={answerFeedback ? { ...styles.timerFill, animationPlayState: "paused" } : styles.timerFill} />
-          </div>
+          <div style={styles.timerTrack}><div key={timerRunId} style={getTimerFillStyle(questionEndsAt, currentTimeMs)} /></div>
           <h2 className="question-text" style={styles.liveQuestionText}>{currentQuestion.text}</h2>
           <div style={styles.optionGrid}>
             {currentQuestion.options.map(function (option, optionIndex) {
-              const isSelected = answers[currentQuestion.id] === optionIndex;
+              const original = currentQuestion.optionOriginalIndexes ? currentQuestion.optionOriginalIndexes[optionIndex] : optionIndex;
+              const selected = Number(answers[currentQuestion.id]) === Number(original);
               return (
-                <button className="option-button" key={currentQuestion.id + "-" + String(optionIndex)} onClick={function () { chooseAnswer(optionIndex); }} style={answerFeedback && !isSelected ? { ...getOptionButtonStyle(false), opacity: 0.58, cursor: "default" } : getOptionButtonStyle(isSelected)} disabled={Boolean(answerFeedback)}>
+                <button className="option-button" key={currentQuestion.id + "-" + optionIndex} onClick={function () { chooseAnswer(optionIndex); }} style={answerFeedback && !selected ? { ...getOptionButtonStyle(false), opacity: 0.58, cursor: "default" } : getOptionButtonStyle(selected)} disabled={Boolean(answerFeedback)}>
                   <span className="option-letter" style={styles.optionLetter}>{String.fromCharCode(65 + optionIndex)}</span>
                   <span>{option}</span>
                 </button>
@@ -951,50 +967,22 @@ export default function App() {
   function renderLeaderboard() {
     return (
       <main className="app-card" style={styles.card}>
-        <div style={styles.leaderboardHeader}>
-          <h2 style={styles.sectionTitle}>Онооны самбар</h2>
-          <span style={styles.leaderboardCount}>Нийт: {filteredLeaderboard.length}</span>
-        </div>
-
-        <input
-          type="text"
-          placeholder="Нэр, газар, салбараар хайх"
-          value={leaderboardSearch}
-          onChange={function (event) { setLeaderboardSearch(event.target.value); }}
-          style={styles.leaderboardSearchInput}
-        />
-
+        <div style={styles.leaderboardHeader}><h2 style={styles.sectionTitle}>Онооны самбар</h2><span style={styles.leaderboardCount}>Нийт: {filteredLeaderboard.length}</span></div>
+        <input type="text" placeholder="Нэр, газар, салбараар хайх" value={leaderboardSearch} onChange={function (event) { setLeaderboardSearch(event.target.value); }} style={styles.leaderboardSearchInput} />
         <div style={styles.tableWrap}>
           <table style={styles.table}>
             <thead><tr><th style={styles.th}>#</th><th style={styles.th}>Нэр</th><th style={styles.th}>Газар</th><th style={styles.th}>Нийт оноо</th><th style={styles.th}>Оролцсон</th></tr></thead>
             <tbody>
-              {paginatedLeaderboard.length > 0 ? (
-                paginatedLeaderboard.map(function (row, index) {
-                  return <tr key={row.id}><td style={styles.td}>{row.rank}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>;
-                })
-              ) : (
-                <tr><td style={styles.td} colSpan="5">Илэрц олдсонгүй.</td></tr>
-              )}
+              {pageRows.length > 0 ? pageRows.map(function (row) {
+                return <tr key={row.id}><td style={styles.td}>{row.rank}</td><td style={styles.td}><strong>{row.name}</strong></td><td style={styles.td}>{row.department}</td><td style={styles.td}><strong>{formatScore(row.totalScore)}</strong></td><td style={styles.td}>{row.completed}</td></tr>;
+              }) : <tr><td style={styles.td} colSpan="5">Илэрц олдсонгүй.</td></tr>}
             </tbody>
           </table>
         </div>
-
         <div style={styles.paginationBar}>
-          <button
-            onClick={function () { setLeaderboardPage(function (page) { return Math.max(1, page - 1); }); }}
-            style={safeLeaderboardPage <= 1 ? styles.disabledPaginationButton : styles.paginationButton}
-            disabled={safeLeaderboardPage <= 1}
-          >
-            Өмнөх
-          </button>
-          <span style={styles.paginationText}>{safeLeaderboardPage} / {leaderboardTotalPages}</span>
-          <button
-            onClick={function () { setLeaderboardPage(function (page) { return Math.min(leaderboardTotalPages, page + 1); }); }}
-            style={safeLeaderboardPage >= leaderboardTotalPages ? styles.disabledPaginationButton : styles.paginationButton}
-            disabled={safeLeaderboardPage >= leaderboardTotalPages}
-          >
-            Дараах
-          </button>
+          <button onClick={function () { setLeaderboardPage(function (page) { return Math.max(1, page - 1); }); }} style={safePage <= 1 ? styles.disabledPaginationButton : styles.paginationButton} disabled={safePage <= 1}>Өмнөх</button>
+          <span style={styles.paginationText}>{safePage} / {totalPages}</span>
+          <button onClick={function () { setLeaderboardPage(function (page) { return Math.min(totalPages, page + 1); }); }} style={safePage >= totalPages ? styles.disabledPaginationButton : styles.paginationButton} disabled={safePage >= totalPages}>Дараах</button>
         </div>
       </main>
     );
@@ -1010,17 +998,10 @@ export default function App() {
               <input type="password" placeholder="Нууц код" value={pin} onChange={function (event) { setPin(event.target.value); }} onKeyDown={function (event) { if (event.key === "Enter") loginAdmin(); }} style={styles.input} />
               <div style={styles.centerAction}><button onClick={loginAdmin} style={styles.primaryButton}>Нэвтрэх</button></div>
             </div>
-          ) : (
-            <div style={styles.profilePanel}>
-              <strong style={styles.profileValue}>Нэвтэрсэн</strong>
-              <button onClick={function () { setIsAdmin(false); setAdminPin(""); }} style={styles.secondaryButton}>Гарах</button>
-            </div>
-          )}
+          ) : <div style={styles.profilePanel}><strong style={styles.profileValue}>Нэвтэрсэн</strong><button onClick={function () { setIsAdmin(false); setAdminPin(""); }} style={styles.secondaryButton}>Гарах</button></div>}
         </section>
         <section className="app-card" style={styles.card}>
-          {!isAdmin ? (
-            <div style={styles.adminEmpty}>Админ нууц код оруулна уу.</div>
-          ) : (
+          {!isAdmin ? <div style={styles.adminEmpty}>Админ нууц код оруулна уу.</div> : (
             <div>
               <div style={styles.adminBox}>
                 <h3 style={styles.smallTitle}>Quiz нэмэх</h3>
@@ -1030,40 +1011,21 @@ export default function App() {
               <div style={styles.adminBox}>
                 <h3 style={styles.smallTitle}>Quiz удирдах</h3>
                 {quizzes.map(function (quiz) {
-                  return (
-                    <div key={quiz.id} style={styles.adminQuizRow}>
-                      <span>{quiz.title}</span>
-                      <div style={styles.adminActions}>
-                        <button onClick={function () { toggleQuizOpen(quiz.id); }} style={styles.secondaryButton}>{quiz.isOpen ? "Хаах" : "Нээх"}</button>
-                        <button onClick={function () { deleteQuiz(quiz.id); }} style={quiz.isOpen ? styles.disabledDangerButton : styles.dangerButton} disabled={quiz.isOpen}>Устгах</button>
-                      </div>
-                    </div>
-                  );
+                  return <div key={quiz.id} style={styles.adminQuizRow}><span>{quiz.title}</span><div style={styles.adminActions}><button onClick={function () { toggleQuiz(quiz.id); }} style={styles.secondaryButton}>{quiz.isOpen ? "Хаах" : "Нээх"}</button><button onClick={function () { deleteQuiz(quiz.id); }} style={quiz.isOpen ? styles.disabledDangerButton : styles.dangerButton} disabled={quiz.isOpen}>Устгах</button></div></div>;
                 })}
               </div>
               <div style={styles.adminBox}>
                 <h3 style={styles.smallTitle}>Quiz-д асуулт нэмэх</h3>
-                <select value={selectedAdminQuiz ? selectedAdminQuiz.id : adminQuizId} onChange={function (event) { setAdminQuizId(event.target.value); }} style={styles.input}>
-                  {quizzes.map(function (quiz) { return <option key={quiz.id} value={quiz.id}>{quiz.title}</option>; })}
-                </select>
+                <select value={selectedAdminQuiz ? selectedAdminQuiz.id : adminQuizId} onChange={function (event) { setAdminQuizId(event.target.value); }} style={styles.input}>{quizzes.map(function (quiz) { return <option key={quiz.id} value={quiz.id}>{quiz.title}</option>; })}</select>
                 <input placeholder="Асуулт" value={newQuestion.text} onChange={function (event) { setNewQuestion(function (previous) { return { ...previous, text: event.target.value }; }); }} style={styles.input} />
-                <textarea placeholder={"Сонголтууд\nСонголт 1\nСонголт 2"} value={newQuestion.options} onChange={function (event) { setNewQuestion(function (previous) { return { ...previous, options: event.target.value }; }); }} style={styles.textarea} />
+                <textarea placeholder={["Сонголтууд", "Сонголт 1", "Сонголт 2"].join("\n")} value={newQuestion.options} onChange={function (event) { setNewQuestion(function (previous) { return { ...previous, options: event.target.value }; }); }} style={styles.textarea} />
                 <input type="number" min="1" placeholder="Зөв хариултын дугаар" value={newQuestion.answer} onChange={function (event) { setNewQuestion(function (previous) { return { ...previous, answer: event.target.value }; }); }} style={styles.input} />
-                <button onClick={addQuestionToQuiz} style={styles.primaryButton}>Асуулт нэмэх</button>
+                <button onClick={addQuestion} style={styles.primaryButton}>Асуулт нэмэх</button>
                 <div style={styles.questionListBox}>
                   <h4 style={styles.questionListTitle}>Одоогийн асуултууд</h4>
-                  {selectedAdminQuiz && selectedAdminQuiz.questions.length > 0 ? (
-                    selectedAdminQuiz.questions.map(function (question, index) {
-                      return (
-                        <div key={question.id} style={styles.questionManageRow}>
-                          <span style={styles.questionManageText}>{index + 1}. {question.text}</span>
-                          <button onClick={function () { deleteQuestionFromQuiz(selectedAdminQuiz.id, question.id); }} style={selectedAdminQuiz.isOpen ? styles.disabledDangerButton : styles.dangerButton} disabled={selectedAdminQuiz.isOpen}>Устгах</button>
-                        </div>
-                      );
-                    })
-                  ) : (
-                    <div style={styles.questionEmptyText}>Энэ quiz-д асуулт алга.</div>
-                  )}
+                  {selectedAdminQuiz && selectedAdminQuiz.questions.length > 0 ? selectedAdminQuiz.questions.map(function (question, index) {
+                    return <div key={question.id} style={styles.questionManageRow}><span style={styles.questionManageText}>{index + 1}. {question.text}</span><button onClick={function () { deleteQuestion(selectedAdminQuiz.id, question.id); }} style={selectedAdminQuiz.isOpen ? styles.disabledDangerButton : styles.dangerButton} disabled={selectedAdminQuiz.isOpen}>Устгах</button></div>;
+                  }) : <div style={styles.questionEmptyText}>Энэ quiz-д асуулт алга.</div>}
                 </div>
               </div>
             </div>
@@ -1079,12 +1041,8 @@ export default function App() {
       {showIntro && <Intro image={lionImage} />}
       <header style={styles.header}>
         <div style={styles.logoStrip}>
-          <div style={styles.netCapitalLogoWrap}>
-            <img src={netCapitalLogo} alt="Netcapital financial group" style={styles.netCapitalLogo} />
-          </div>
-          <div style={styles.iiaLogoWrap}>
-            <img src={iiaLogo} alt="The Institute of Internal Auditors" style={styles.iiaLogo} />
-          </div>
+          <div style={styles.netCapitalLogoWrap}><img src={netCapitalLogo} alt="Netcapital financial group" style={styles.netCapitalLogo} /></div>
+          <div style={styles.iiaLogoWrap}><img src={iiaLogo} alt="The Institute of Internal Auditors" style={styles.iiaLogo} /></div>
         </div>
         <div style={styles.headerTitleBlock}>
           <h1 className="app-title" style={styles.title}>Дотоод аудитыг сурталчлах сар</h1>
@@ -1092,27 +1050,12 @@ export default function App() {
         </div>
       </header>
       {globalError && <div style={styles.globalError}>{globalError}</div>}
-      {updateAvailable && (
-        <div style={styles.updateBanner}>
-          <span>Сайтын шинэ хувилбар гарсан байна.</span>
-          <button onClick={function () { window.location.reload(); }} style={styles.updateButton}>Шинэчлэх</button>
-        </div>
-      )}
       <nav className="app-tabs" style={styles.tabs}>
-        <button className="app-tab" onClick={function () { setTab("quiz"); }} style={getTabStyle(tab === "quiz")}>Асуулт</button>
-        <button className="app-tab" onClick={function () { setTab("leaderboard"); }} style={getTabStyle(tab === "leaderboard")}>Онооны самбар</button>
-        <button className="app-tab" onClick={function () { setTab("admin"); }} style={getTabStyle(tab === "admin")}>Админ</button>
+        <button className="app-tab" onClick={function () { setTab("quiz"); }} style={tab === "quiz" ? styles.tabActive : styles.tab}>Асуулт</button>
+        <button className="app-tab" onClick={function () { setTab("leaderboard"); }} style={tab === "leaderboard" ? styles.tabActive : styles.tab}>Онооны самбар</button>
+        <button className="app-tab" onClick={function () { setTab("admin"); }} style={tab === "admin" ? styles.tabActive : styles.tab}>Админ</button>
       </nav>
-      {tab === "quiz" && (
-        <main className="app-grid" style={styles.grid}>
-          <section className="app-card" style={styles.card}>{!currentUser ? renderAuth() : renderProfile()}</section>
-          <section className="app-card" style={quizStarted && answerFeedback ? (answerFeedback.isCorrect ? styles.quizCardAnswered : styles.quizCardWrong) : styles.card}>
-            {!quizStarted && lastResult && renderResult()}
-            {!quizStarted && !lastResult && renderStartPanel()}
-            {quizStarted && currentQuestion && renderQuestion()}
-          </section>
-        </main>
-      )}
+      {tab === "quiz" && <main className="app-grid" style={styles.grid}><section className="app-card" style={styles.card}>{!currentUser ? renderAuth() : renderProfile()}</section><section className="app-card" style={quizStarted && answerFeedback ? (answerFeedback.isCorrect ? styles.quizCardAnswered : styles.quizCardWrong) : styles.card}>{!quizStarted && lastResult && renderResult()}{!quizStarted && !lastResult && renderStartPanel()}{quizStarted && currentQuestion && renderQuestion()}</section></main>}
       {tab === "leaderboard" && renderLeaderboard()}
       {tab === "admin" && renderAdmin()}
       <footer style={styles.footerTagline}>Lead the movement. Share your voice.</footer>
@@ -1125,164 +1068,21 @@ function Empty({ text }) {
 }
 
 function Intro({ image }) {
-  return (
-    <div style={styles.introOverlay}>
-      <img src={image} alt="Арслан" style={styles.introLionImage} />
-    </div>
-  );
+  return <div style={styles.introOverlay}><img src={image} alt="Арслан" style={styles.introLionImage} /></div>;
 }
 
 const appCss = `
-  html,
-  body,
-  #root {
-    margin: 0 !important;
-    padding: 0 !important;
-    width: 100%;
-    min-width: 0;
-    min-height: 100%;
-    background: radial-gradient(circle at top, #0a5a46 0%, #00305E 38%, #02070d 100%);
-    overflow-x: hidden;
-  }
-
-  body {
-    margin: 0 !important;
-    padding: 0 !important;
-    font-family: Inter, Arial, sans-serif !important;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-  }
-
-  .app-page,
-  .app-page * {
-    box-sizing: border-box;
-    font-family: Inter, Arial, sans-serif !important;
-  }
-
-  .app-page * {
-    border: none !important;
-    outline: none !important;
-    letter-spacing: normal !important;
-    text-transform: none !important;
-  }
-
-  .app-page button,
-  .app-page input,
-  .app-page textarea,
-  .app-page select,
-  .app-page a {
-    font: inherit !important;
-    font-family: inherit !important;
-    letter-spacing: normal !important;
-    text-transform: none !important;
-    -webkit-tap-highlight-color: transparent;
-  }
-
-  .app-page button,
-  .app-page input,
-  .app-page textarea,
-  .app-page select {
-    appearance: none;
-    -webkit-appearance: none;
-    -moz-appearance: none;
-  }
-
-  @keyframes confettiPop {
-    0% { opacity: 0; transform: translate(-50%, -50%) scale(0.45) rotate(0deg); }
-    10% { opacity: 1; }
-    45% { opacity: 1; transform: translate(calc(-50% + var(--x)), calc(-50% + var(--jump))) scale(1) rotate(calc(var(--r) * 0.55)); }
-    78% { opacity: 1; transform: translate(calc(-50% + var(--x)), calc(-50% + var(--fall))) scale(1) rotate(var(--r)); }
-    100% { opacity: 1; transform: translate(calc(-50% + var(--x)), calc(-50% + var(--final-y))) scale(1) rotate(var(--r)); }
-  }
-
+  html, body, #root { margin: 0 !important; padding: 0 !important; width: 100%; min-width: 0; min-height: 100%; background: radial-gradient(circle at top, #0a5a46 0%, #00305E 38%, #02070d 100%); overflow-x: hidden; }
+  body { margin: 0 !important; padding: 0 !important; font-family: Inter, Arial, sans-serif !important; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  .app-page, .app-page * { box-sizing: border-box; font-family: Inter, Arial, sans-serif !important; }
+  .app-page * { border: none !important; outline: none !important; letter-spacing: normal !important; text-transform: none !important; }
+  .app-page button, .app-page input, .app-page textarea, .app-page select { font: inherit !important; font-family: inherit !important; appearance: none; -webkit-appearance: none; -moz-appearance: none; }
   @keyframes timerDrain { from { width: 100%; } to { width: 0%; } }
-
-  @keyframes introOverlayFade {
-    0% { opacity: 1; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); background: rgba(2, 10, 20, 0.30); }
-    70% { opacity: 1; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); background: rgba(2, 10, 20, 0.24); }
-    100% { opacity: 0; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(0px); background: rgba(2, 10, 20, 0); }
-  }
-
-  @keyframes introLogoFade {
-    0% { opacity: 0; transform: scale(0.88); filter: blur(0px) drop-shadow(0 0 28px rgba(75, 220, 230, 0.34)); }
-    18% { opacity: 1; transform: scale(1); filter: blur(0px) drop-shadow(0 0 28px rgba(75, 220, 230, 0.34)); }
-    70% { opacity: 1; transform: scale(1.04); filter: blur(0px) drop-shadow(0 0 28px rgba(75, 220, 230, 0.34)); }
-    100% { opacity: 0; transform: scale(1.12); filter: blur(16px) drop-shadow(0 0 12px rgba(75, 220, 230, 0.18)); }
-  }
-
-  @media (max-width: 1100px) {
-    .app-grid { grid-template-columns: 1fr !important; }
-  }
-
-  @media (max-width: 760px) {
-    .app-page header {
-      align-items: flex-start !important;
-      gap: 0 !important;
-    }
-
-    .app-page header > div:first-child {
-      width: 100% !important;
-      justify-content: flex-start !important;
-      gap: 0 !important;
-      margin-left: 0 !important;
-      margin-right: 0 !important;
-    }
-
-    .app-page header > div:first-child > div:first-child {
-      width: auto !important;
-      height: 78px !important;
-      padding: 0 !important;
-    }
-
-    .app-page header > div:first-child > div:first-child {
-      width: auto !important;
-      height: 48px !important;
-      padding: 0 !important;
-      margin-right: 5px !important;
-    }
-
-    .app-page header > div:first-child > div:last-child {
-      width: auto !important;
-      height: 78px !important;
-      padding: 0 !important;
-      margin-left: 0 !important;
-    }
-
-    .app-page footer {
-      font-size: 18px !important;
-      margin-top: 14px !important;
-      padding: 12px 8px !important;
-    }
-
-    .app-page { width: 100% !important; max-width: 100vw !important; padding: 14px !important; overflow-x: hidden !important; }
-    .app-title { font-size: 24px !important; line-height: 1.12 !important; word-break: keep-all !important; }
-    .app-subtitle { font-size: 13px !important; }
-    .app-tabs { gap: 6px !important; margin-bottom: 12px !important; display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; width: 100% !important; }
-    .app-tab { width: 100% !important; min-width: 0 !important; padding: 9px 5px !important; font-size: 12px !important; white-space: nowrap !important; }
-    .app-grid { grid-template-columns: 1fr !important; gap: 12px !important; width: 100% !important; min-width: 0 !important; }
-    .app-card { width: 100% !important; min-width: 0 !important; padding: 12px !important; border-radius: 14px !important; min-height: auto !important; }
-    .quiz-title { font-size: 30px !important; line-height: 1.1 !important; }
-    .start-panel { min-height: 280px !important; gap: 14px !important; }
-    .big-start-button { padding: 12px 22px !important; font-size: 17px !important; }
-    .question-stage { min-height: 250px !important; }
-    .question-text { font-size: 18px !important; line-height: 1.35 !important; }
-    .option-button { width: 100% !important; min-height: 56px !important; padding: 12px !important; font-size: 14px !important; gap: 10px !important; }
-    .option-letter { width: 24px !important; height: 24px !important; font-size: 11px !important; }
-    .score-value { font-size: 68px !important; }
-    table { min-width: 620px !important; }
-  }
-
-  @media (max-width: 430px) {
-    .app-page { padding: 10px !important; }
-    .app-title { font-size: 21px !important; }
-    .app-grid { gap: 10px !important; }
-    .app-card { padding: 10px !important; }
-    .auth-switch { grid-template-columns: 1fr !important; }
-    .question-text { font-size: 16px !important; }
-    .option-button { min-height: 52px !important; padding: 10px !important; font-size: 13px !important; }
-    .score-value { font-size: 56px !important; }
-  }
+  @keyframes confettiPop { 0% { opacity: 0; transform: translate(-50%, -50%) scale(0.45) rotate(0deg); } 10% { opacity: 1; } 45% { opacity: 1; transform: translate(calc(-50% + var(--x)), calc(-50% + var(--jump))) scale(1) rotate(calc(var(--r) * 0.55)); } 78% { opacity: 1; transform: translate(calc(-50% + var(--x)), calc(-50% + var(--fall))) scale(1) rotate(var(--r)); } 100% { opacity: 1; transform: translate(calc(-50% + var(--x)), calc(-50% + var(--final-y))) scale(1) rotate(var(--r)); } }
+  @keyframes introOverlayFade { 0% { opacity: 1; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); background: rgba(2, 10, 20, 0.30); } 70% { opacity: 1; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); background: rgba(2, 10, 20, 0.24); } 100% { opacity: 0; backdrop-filter: blur(0px); -webkit-backdrop-filter: blur(0px); background: rgba(2, 10, 20, 0); } }
+  @keyframes introLogoFade { 0% { opacity: 0; transform: scale(0.88); filter: blur(0px) drop-shadow(0 0 28px rgba(75, 220, 230, 0.34)); } 18% { opacity: 1; transform: scale(1); } 70% { opacity: 1; transform: scale(1.04); } 100% { opacity: 0; transform: scale(1.12); filter: blur(16px) drop-shadow(0 0 12px rgba(75, 220, 230, 0.18)); } }
+  @media (max-width: 1100px) { .app-grid { grid-template-columns: 1fr !important; } }
+  @media (max-width: 760px) { .app-page { padding: 14px !important; } .app-page header { align-items: flex-start !important; } .app-title { font-size: 24px !important; } .app-tabs { display: grid !important; grid-template-columns: repeat(3, minmax(0, 1fr)) !important; gap: 6px !important; } .app-tab { padding: 9px 5px !important; font-size: 12px !important; } .app-card { padding: 12px !important; } .quiz-title { font-size: 30px !important; } .option-button { width: 100% !important; min-height: 56px !important; font-size: 14px !important; } table { min-width: 620px !important; } }
 `;
 
 const baseFont = "Inter, Arial, sans-serif";
@@ -1317,13 +1117,11 @@ const styles = {
   dangerButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(80,10,10,0.34)", color: "#fecaca", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   disabledDangerButton: { padding: "8px 12px", borderRadius: 9, background: "rgba(30,41,59,0.38)", color: "#94a3b8", cursor: "not-allowed", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   authSwitch: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: 3, borderRadius: 10, background: "rgba(0,18,35,0.70)", marginBottom: 10 },
-  authSwitchButton: { padding: "7px 8px", borderRadius: 8, background: "transparent", color: "#d9ffc7", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont, letterSpacing: 0, textTransform: "none" },
-  authSwitchActive: { padding: "7px 8px", borderRadius: 8, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont, letterSpacing: 0, textTransform: "none" },
+  authSwitchButton: { padding: "7px 8px", borderRadius: 8, background: "transparent", color: "#d9ffc7", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
+  authSwitchActive: { padding: "7px 8px", borderRadius: 8, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   centerAction: { display: "flex", justifyContent: "center", marginTop: 8 },
   error: { color: "#fca5a5", fontSize: 14, marginTop: 8, textAlign: "center", fontFamily: baseFont },
   globalError: { marginBottom: 12, padding: 10, borderRadius: 10, background: "rgba(127,29,29,0.38)", color: "#fecaca", textAlign: "center", fontFamily: baseFont },
-  updateBanner: { marginBottom: 12, padding: 10, borderRadius: 10, background: "rgba(122,201,67,0.16)", color: "#d9ffc7", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", textAlign: "center", fontFamily: baseFont },
-  updateButton: { padding: "7px 11px", borderRadius: 9, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 13, fontFamily: baseFont },
   profilePanel: { display: "grid", gap: 14, marginTop: 12, padding: 12, borderRadius: 10, background: "rgba(0,18,35,0.70)" },
   profileLabel: { display: "block", color: "#d9ffc7", fontSize: 12, marginBottom: 4, fontFamily: baseFont },
   profileValue: { display: "block", color: "#f5fbff", fontSize: 16, fontFamily: baseFont },
@@ -1336,7 +1134,7 @@ const styles = {
   empty: { borderRadius: 10, padding: 16, color: "#d9ffc7", background: "rgba(0,18,35,0.70)", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 90, boxSizing: "border-box", fontFamily: baseFont },
   adminEmpty: { borderRadius: 10, padding: 16, color: "#d9ffc7", background: "rgba(0,18,35,0.70)", textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 220, height: "100%", boxSizing: "border-box", fontFamily: baseFont },
   timerTrack: { height: 9, background: "rgba(122,201,67,0.16)", borderRadius: 9999, overflow: "hidden", marginBottom: 14, padding: 1, boxSizing: "border-box", WebkitMaskImage: "-webkit-radial-gradient(white, black)" },
-  timerFill: { height: "100%", width: "100%", background: "linear-gradient(90deg, #9BE564, #7AC943)", borderRadius: 9999, animationName: "timerDrain", animationDuration: String(QUESTION_SECONDS) + "s", animationTimingFunction: "linear", animationFillMode: "forwards", boxShadow: "0 0 10px rgba(122,201,67,0.55)", overflow: "hidden" },
+  timerFill: { height: "100%", width: "100%", background: "linear-gradient(90deg, #9BE564, #7AC943)", borderRadius: 9999, transition: "width 0.25s linear", boxShadow: "0 0 10px rgba(122,201,67,0.55)", overflow: "hidden" },
   questionStage: { position: "relative", minHeight: 230, borderRadius: 14, overflow: "hidden" },
   questionContent: { transition: "filter 0.25s ease, opacity 0.25s ease, transform 0.25s ease" },
   questionContentBlurred: { filter: "blur(8px)", opacity: 0.34, transform: "scale(0.985)", transition: "filter 0.25s ease, opacity 0.25s ease, transform 0.25s ease", pointerEvents: "none" },
@@ -1346,16 +1144,16 @@ const styles = {
   optionLetter: { width: 24, height: 24, borderRadius: 999, background: "linear-gradient(180deg, #42BFED, #017AC1)", color: "#071306", display: "grid", placeItems: "center", flex: "0 0 auto", fontSize: 12, fontWeight: 700, boxShadow: "0 0 10px rgba(122,201,67,0.32)", fontFamily: baseFont },
   scoreOverlay: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", background: "rgba(122,201,67,0.20)", borderRadius: 16, color: "#071306", zIndex: 3, fontFamily: baseFont },
   scoreOverlayWrong: { position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", background: "rgba(248,113,113,0.24)", borderRadius: 16, color: "#fff7f7", zIndex: 3, fontFamily: baseFont },
-  scoreOverlayLabel: { fontSize: 20, fontWeight: 700, marginBottom: 8, fontFamily: baseFont, letterSpacing: 0, textTransform: "none" },
-  scoreOverlayValue: { fontSize: 68, lineHeight: 1, fontWeight: 800, textShadow: "0 0 18px rgba(255,255,255,0.40)", fontFamily: baseFont, letterSpacing: 0, textTransform: "none" },
-  scoreOverlaySub: { marginTop: 6, fontSize: 18, fontWeight: 700, opacity: 0.86, fontFamily: baseFont, letterSpacing: 0, textTransform: "none" },
+  scoreOverlayLabel: { fontSize: 20, fontWeight: 700, marginBottom: 8, fontFamily: baseFont },
+  scoreOverlayValue: { fontSize: 68, lineHeight: 1, fontWeight: 800, textShadow: "0 0 18px rgba(255,255,255,0.40)", fontFamily: baseFont },
+  scoreOverlaySub: { marginTop: 6, fontSize: 18, fontWeight: 700, opacity: 0.86, fontFamily: baseFont },
   resultPanel: { minHeight: 340, position: "relative", overflow: "hidden", display: "flex", flexDirection: "column", justifyContent: "center", alignItems: "center", textAlign: "center", gap: 10 },
-  confettiWrap: { position: "absolute", inset: 0, pointerEvents: "none" },
-  resultBadge: { padding: "8px 18px", borderRadius: 999, background: "rgba(122,201,67,0.16)", color: "#d9ffc7", fontWeight: 700, fontSize: 26, lineHeight: 1.1, textShadow: "0 0 16px rgba(122,201,67,0.46)", boxShadow: "0 0 20px rgba(122,201,67,0.16)", fontFamily: baseFont, letterSpacing: 0, textTransform: "none" },
-  resultTitle: { margin: 0, fontSize: 22, color: "#f5fbff", fontFamily: baseFont },
-  resultScore: { fontSize: 56, lineHeight: 1, fontWeight: 900, color: "#9BE564", textShadow: "0 0 20px rgba(122,201,67,0.46)", fontFamily: baseFont },
-  resultText: { margin: "0 0 10px", color: "#d9ffc7", fontSize: 16, fontFamily: baseFont },
-  resultButton: { padding: "12px 22px", borderRadius: 12, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 16, fontFamily: baseFont, boxShadow: "0 0 20px rgba(122,201,67,0.42)" },
+  confettiWrap: { position: "absolute", inset: 0, pointerEvents: "none", zIndex: 1 },
+  resultBadge: { position: "relative", zIndex: 2, padding: "8px 18px", borderRadius: 999, background: "rgba(122,201,67,0.16)", color: "#d9ffc7", fontWeight: 700, fontSize: 26, lineHeight: 1.1, textShadow: "0 0 16px rgba(122,201,67,0.46)", boxShadow: "0 0 20px rgba(122,201,67,0.16)", fontFamily: baseFont },
+  resultTitle: { position: "relative", zIndex: 2, margin: 0, fontSize: 22, color: "#f5fbff", fontFamily: baseFont },
+  resultScore: { position: "relative", zIndex: 2, fontSize: 56, lineHeight: 1, fontWeight: 900, color: "#9BE564", textShadow: "0 0 20px rgba(122,201,67,0.46)", fontFamily: baseFont },
+  resultText: { position: "relative", zIndex: 2, margin: "0 0 10px", color: "#d9ffc7", fontSize: 16, fontFamily: baseFont },
+  resultButton: { position: "relative", zIndex: 2, padding: "12px 22px", borderRadius: 12, background: "linear-gradient(180deg, #9BE564, #7AC943)", color: "#071306", cursor: "pointer", fontWeight: 700, fontSize: 16, fontFamily: baseFont, boxShadow: "0 0 20px rgba(122,201,67,0.42)" },
   leaderboardHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10, fontFamily: baseFont },
   leaderboardCount: { color: "#d9ffc7", fontSize: 13, fontWeight: 700, fontFamily: baseFont },
   leaderboardSearchInput: { width: "100%", padding: "10px 12px", borderRadius: 10, background: "rgba(0,18,35,0.78)", color: "#f5fbff", marginBottom: 12, boxSizing: "border-box", outline: "none", fontSize: 14, fontFamily: baseFont },
@@ -1386,19 +1184,17 @@ function runSelfTests() {
   console.assert(isValidWorkEmail("test@netcapital.mn"), "netcapital work email should be valid");
   console.assert(isValidWorkEmail("test@netgroup.mn"), "netgroup work email should be valid");
   console.assert(!isValidWorkEmail("test@gmail.com"), "non-work email should be invalid");
-  console.assert(isValidDepartment("ТУЗ"), "department list should include TUZ");
-  console.assert(calculateQuestionPoints(true, 30) === 1000, "max score should be 1000");
-  console.assert(calculateQuestionPoints(false, 20) === 0, "wrong answer should be 0");
-  console.assert(parseOptions("A\n\nB").length === 2, "parseOptions should ignore blanks");
-  console.assert(getOptionButtonStyle(false).boxShadow === "none", "unselected option should not have shadow");
-  console.assert(Array.isArray(INITIAL_QUIZZES), "backend build should start with an empty quiz cache");
-  console.assert(normalizeQuizFromApi({ id: "1", title: "T", is_open: true, questions: [{ id: "q", text: "A", options: ["A", "B"], answer_index: 1 }] }).questions[0].answer === 1, "API quiz normalization should map answer_index to answer");
-  console.assert(buildLeaderboard([{ userId: "u1", userName: "A", department: "D", score: 10 }, { userId: "u1", userName: "A", department: "D", score: 20 }])[0].totalScore === 30, "leaderboard should sum backend submissions by user");
-  console.assert(CURRENT_USER_STORAGE_KEY.length > 0, "current user storage key should exist for refresh persistence");
-  console.assert(normalizeText("  Test   User  ") === "Test User", "normalizeText should clean profile names before update");
-  console.assert(buildLeaderboard(Array.from({ length: 12 }).map(function (_, index) { return { userId: "u" + index, userName: "User " + index, department: "D", score: index }; })).length === 12, "leaderboard should support pagination-sized datasets");
-  console.assert(APP_UPDATE_CHECK_INTERVAL_MS >= 30000, "app update check interval should not be too aggressive");
-  console.assert(LIVE_DATA_REFRESH_INTERVAL_MS >= 5000, "live data refresh should not be too aggressive");
+  console.assert(parseOptions(["A", "", "B"].join("\n")).length === 2, "parseOptions should ignore blanks");
+  const shuffledQuestion = shuffleQuestions([{ id: "q", text: "T", options: ["A", "B", "C"], answer: 1 }])[0];
+  console.assert(shuffledQuestion.options.length === 3, "shuffle should preserve option count");
+  console.assert(shuffledQuestion.optionOriginalIndexes.length === 3, "shuffle should preserve original indexes");
+  console.assert(calculatePoints(true, 20) === 1000, "max score should be 1000");
+  console.assert(calculatePoints(false, 20) === 0, "wrong answer should be 0");
+  console.assert(QUIZ_MUSIC_INTERVAL_MS >= 1500, "quiz background music should stay gentle");
+  console.assert(typeof unlockAudio === "function", "audio should be unlockable from a user gesture");
+  console.assert(getTimerFillStyle(Date.now() + QUESTION_SECONDS * 1000, Date.now()).width === "100%", "timer should start full");
+  console.assert(getConfettiStyle(0).animationName === "confettiPop", "result confetti should be enabled");
+  console.assert(buildLeaderboard([{ userId: "u1", userName: "A", department: "D", score: 10 }, { userId: "u1", userName: "A", department: "D", score: 20 }])[0].totalScore === 30, "leaderboard should sum scores");
 }
 
 runSelfTests();
